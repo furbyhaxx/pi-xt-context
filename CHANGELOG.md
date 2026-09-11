@@ -17,8 +17,7 @@ entries below describe the upstream `pi-on-demand-context` releases.
 - Default discovery is `AGENTS.md` only (no implicit `CLAUDE.md`).
 - `/list-context`, `/odc-working-dir-only`, and `/odc-hide-contents` replaced
   by `/context`, `/context list`, and `/context config`.
-- Durable message `customType` is `pi-xt-context`. Old `on-demand-context`
-  messages still render and dedup on resume.
+- Durable message `customType` is `pi-xt-context`.
 - Path dedup is case-sensitive on POSIX.
 
 ### Added

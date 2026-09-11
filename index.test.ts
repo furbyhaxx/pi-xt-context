@@ -34,7 +34,7 @@ describe("extension factory", () => {
           getBranch: () => [
             {
               type: "custom_message",
-              customType: "on-demand-context",
+              customType: "pi-xt-context",
               details: { files: [join(cwd, "AGENTS.md")] },
             },
           ],

@@ -67,12 +67,12 @@ describe("formatOverview / formatFileList", () => {
 });
 
 describe("collectExtensionFilesFromBranch", () => {
-  it("restores unique files from the active branch, including legacy customType", () => {
+  it("restores unique files from the active branch", () => {
     const files = collectExtensionFilesFromBranch([
       { type: "message" },
       {
         type: "custom_message",
-        customType: "on-demand-context",
+        customType: "pi-xt-context",
         details: { files: ["/proj/AGENTS.md", "/proj/app/AGENTS.md"] },
       },
       {

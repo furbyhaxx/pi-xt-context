@@ -35,7 +35,6 @@ import {
 import {
   collectExtensionFilesFromBranch,
   CUSTOM_TYPE,
-  LEGACY_CUSTOM_TYPE,
   type ExtensionLoadedFile,
 } from "./src/loaded.ts";
 import { fileDedupKey, fromBashPath, isContainedIn, pathKey } from "./src/paths.ts";
@@ -168,7 +167,6 @@ export default function piXtContext(pi: ExtensionAPI) {
   };
 
   pi.registerMessageRenderer<ContextDetails>(CUSTOM_TYPE, renderContextMessage);
-  pi.registerMessageRenderer<ContextDetails>(LEGACY_CUSTOM_TYPE, renderContextMessage);
 
   pi.on("tool_result", async (event) => {
     if (!state || event.isError) return;
