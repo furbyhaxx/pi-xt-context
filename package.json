@@ -1,36 +1,45 @@
 {
-  "name": "@quartermaster-labs/pi-on-demand-context",
-  "version": "0.3.1",
-  "description": "Pi extension. Auto-loads CLAUDE.md / AGENTS.md context when the model works in a dir — via bash `cd` or any file tool (read/edit/write/grep/ls/find). Injected once, durably; deduped against pi's own loader.",
+  "name": "pi-xt-context",
+  "version": "0.4.0",
+  "description": "Pi extension. Auto-loads nested context files (default: AGENTS.md) when the model works in a directory — via bash cd or any file tool. Injected once, durably; configured from settings.json.",
   "keywords": [
     "pi-package",
     "pi-extension",
     "context",
-    "claude.md",
     "agents.md"
   ],
   "type": "module",
   "scripts": {
     "test": "vitest run"
   },
+  "dependencies": {
+    "proper-lockfile": "^4.1.2",
+    "tinyglobby": "^0.2.14"
+  },
   "devDependencies": {
     "vitest": "^2.0.0"
   },
   "license": "MIT",
-  "author": "Radu0120 (https://github.com/Radu0120)",
+  "author": "furbyhaxx (https://github.com/furbyhaxx)",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Quartermaster-Labs/pi-on-demand-context.git"
+    "url": "git+https://github.com/furbyhaxx/pi-xt-context.git"
   },
-  "homepage": "https://github.com/Quartermaster-Labs/pi-on-demand-context#readme",
+  "homepage": "https://github.com/furbyhaxx/pi-xt-context#readme",
   "bugs": {
-    "url": "https://github.com/Quartermaster-Labs/pi-on-demand-context/issues"
+    "url": "https://github.com/furbyhaxx/pi-xt-context/issues"
   },
   "publishConfig": {
     "access": "public"
   },
   "files": [
     "index.ts",
+    "src/commands.ts",
+    "src/config.ts",
+    "src/discovery.ts",
+    "src/loaded.ts",
+    "src/paths.ts",
+    "docs",
     "README.md",
     "CHANGELOG.md",
     "LICENSE"

@@ -2,6 +2,39 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.4.0] — 2026-09-11
+
+Forked as **pi-xt-context**. Breaking config and command changes; historical
+entries below describe the upstream `pi-on-demand-context` releases.
+
+### Changed
+
+- Package renamed to unscoped `pi-xt-context`.
+- Config moved into Pi `settings.json` under the top-level `"context"` key
+  (user: `<agentDir>/settings.json`, project: `<cwd>/.pi/settings.json`).
+  `PI_CODING_AGENT_DIR` is honored through Pi's `getAgentDir()`. Project
+  settings remain trust-gated.
+- Default discovery is `AGENTS.md` only (no implicit `CLAUDE.md`).
+- `/list-context`, `/odc-working-dir-only`, and `/odc-hide-contents` replaced
+  by `/context`, `/context list`, and `/context config`.
+- Durable message `customType` is `pi-xt-context`. Old `on-demand-context`
+  messages still render and dedup on resume.
+- Path dedup is case-sensitive on POSIX.
+
+### Added
+
+- `context.files` glob list (replaces inherited arrays; `[]` disables
+  extension discovery). Patterns expand per walked directory.
+- `/context config` TUI editor with user/project scope, inherit/reset, and
+  one-glob-per-line files editing.
+- Session-branch reconstruction of already injected files so `/context list`
+  and dedup survive `/reload`, `/resume`, and `/fork`.
+
+### Removed
+
+- Reading `on-demand-context.json`. Copy `workingDirOnly` / `hideContents`
+  into `settings.json` `context` yourself; legacy files are not deleted.
+
 ## [0.3.1] — 2026-08-18
 
 ### Fixed
