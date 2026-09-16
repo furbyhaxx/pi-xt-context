@@ -2,6 +2,15 @@
 
 All notable changes to this project are documented in this file.
 
+## [Unreleased]
+
+### Changed
+
+- Context transcript rows now use `[context] loaded <workspace-relative paths>`.
+- Session tree rows now use `[context]: <workspace-relative paths>` instead of
+  previewing injected context contents. Existing `pi-xt-context` session entries
+  remain supported.
+
 ## [0.4.0] — 2026-09-11
 
 Forked as **pi-xt-context**. Breaking config and command changes; historical

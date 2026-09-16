@@ -36,7 +36,7 @@ Unrelated Pi settings in the same file are left untouched. Unknown keys inside
 | Key | Type | Default | Meaning |
 |---|---|---|---|
 | `workingDirOnly` | boolean | `true` | Only load matches under Pi's launch directory. `cd` still updates the tracked dir. |
-| `hideContents` | boolean | `false` | TUI keeps the compact `loaded <paths>` line even when tool output is expanded. The LLM still receives full contents. |
+| `hideContents` | boolean | `false` | TUI keeps the compact `[context] loaded <workspace-relative paths>` line even when tool output is expanded. The LLM still receives full contents. |
 | `files` | string[] | `["AGENTS.md"]` | Glob patterns expanded at each walked directory. An empty array disables extension discovery. |
 
 Precedence is **defaults < user < trusted project**, per key. A `files` array

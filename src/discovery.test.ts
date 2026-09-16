@@ -9,7 +9,7 @@ import {
   pickNewFiles,
   resolveCdDir,
 } from "./discovery.ts";
-import { fileDedupKey, isUnderOrEqual } from "./paths.ts";
+import { fileDedupKey, isUnderOrEqual, workspaceDisplayPath } from "./paths.ts";
 
 const HOME = "/home/radu";
 const CWD = "/proj/app";
@@ -240,6 +240,15 @@ describe("dirForToolEvent", () => {
   it("dir tools default to baseDir when path omitted", () => {
     expect(dirForToolEvent("ls", {}, BASE)).toBe(BASE);
     expect(dirForToolEvent("grep", { pattern: "x" }, BASE)).toBe(BASE);
+  });
+});
+
+describe("workspaceDisplayPath", () => {
+  it("uses slash-normalized workspace-relative paths when possible", () => {
+    expect(workspaceDisplayPath(join(BASE, ".project", "AGENTS.md"), BASE)).toBe(
+      ".project/AGENTS.md",
+    );
+    expect(workspaceDisplayPath("/other/AGENTS.md", BASE)).toBe("/other/AGENTS.md");
   });
 });
 

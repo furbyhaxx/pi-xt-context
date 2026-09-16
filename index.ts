@@ -35,9 +35,16 @@ import {
 import {
   collectExtensionFilesFromBranch,
   CUSTOM_TYPE,
+  LEGACY_CUSTOM_TYPE,
   type ExtensionLoadedFile,
 } from "./src/loaded.ts";
-import { fileDedupKey, fromBashPath, isContainedIn, pathKey } from "./src/paths.ts";
+import {
+  fileDedupKey,
+  fromBashPath,
+  isContainedIn,
+  pathKey,
+  workspaceDisplayPath,
+} from "./src/paths.ts";
 
 export {
   buildContextBlock,
@@ -54,7 +61,12 @@ export {
   saveContextSettings,
   validatePattern,
 } from "./src/config.ts";
-export { fileDedupKey, isUnderOrEqual, pathKey } from "./src/paths.ts";
+export {
+  fileDedupKey,
+  isUnderOrEqual,
+  pathKey,
+  workspaceDisplayPath,
+} from "./src/paths.ts";
 export { parseContextArgs } from "./src/commands.ts";
 export {
   collectExtensionFilesFromBranch,
@@ -64,6 +76,7 @@ export {
 
 interface ContextDetails {
   files: string[];
+  context?: string;
 }
 
 export interface State {
@@ -148,25 +161,40 @@ export default function piXtContext(pi: ExtensionAPI) {
     theme: { fg: (name: string, text: string) => string },
   ) => {
     if (options.expanded && !config.effective.hideContents) {
-      const text =
-        typeof message.content === "string"
+      const text = message.details?.context ??
+        (typeof message.content === "string"
           ? message.content
           : message.content
               .filter((c) => c.type === "text")
               .map((c) => c.text ?? "")
-              .join("\n");
+              .join("\n"));
       return new Text(theme.fg("muted", text), options.outputPad, 0);
     }
     const files = message.details?.files;
-    const paths = files && files.length > 0 ? files.join(", ") : "context files";
+    const paths = files && files.length > 0
+      ? files.map((path) => workspaceDisplayPath(path, state?.launchDir ?? process.cwd())).join(", ")
+      : "context files";
     return new Text(
-      theme.fg("customMessageLabel", "loaded ") + theme.fg("muted", paths),
+      theme.fg("customMessageLabel", "[context] loaded ") + theme.fg("muted", paths),
       options.outputPad,
       0,
     );
   };
 
   pi.registerMessageRenderer<ContextDetails>(CUSTOM_TYPE, renderContextMessage);
+  pi.registerMessageRenderer<ContextDetails>(LEGACY_CUSTOM_TYPE, renderContextMessage);
+
+  pi.on("context", (event) => {
+    let changed = false;
+    const messages = event.messages.map((message) => {
+      if (message.role !== "custom" || message.customType !== CUSTOM_TYPE) return message;
+      const details = message.details as ContextDetails | undefined;
+      if (!details?.context) return message;
+      changed = true;
+      return { ...message, content: [{ type: "text" as const, text: details.context }] };
+    });
+    if (changed) return { messages };
+  });
 
   pi.on("tool_result", async (event) => {
     if (!state || event.isError) return;
@@ -226,12 +254,14 @@ export default function piXtContext(pi: ExtensionAPI) {
         return;
       }
       try {
+        const context = buildContextBlock(fresh);
+        const displayPaths = fresh.map((f) => workspaceDisplayPath(f.path, state!.launchDir));
         await pi.sendMessage(
           {
             customType: CUSTOM_TYPE,
-            content: [{ type: "text", text: buildContextBlock(fresh) }],
+            content: displayPaths.join(", "),
             display: true,
-            details: { files: fresh.map((f) => f.path) },
+            details: { files: fresh.map((f) => f.path), context },
           },
           { deliverAs: "steer" },
         );

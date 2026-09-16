@@ -1,6 +1,7 @@
 import { fileDedupKey } from "./paths.ts";
 
-export const CUSTOM_TYPE = "pi-xt-context";
+export const CUSTOM_TYPE = "context";
+export const LEGACY_CUSTOM_TYPE = "pi-xt-context";
 
 export interface ExtensionLoadedFile {
   path: string;
@@ -21,7 +22,7 @@ export function collectExtensionFilesFromBranch(
   const seen = new Set<string>();
   for (const entry of entries) {
     if (entry?.type !== "custom_message") continue;
-    if (entry.customType !== CUSTOM_TYPE) continue;
+    if (entry.customType !== CUSTOM_TYPE && entry.customType !== LEGACY_CUSTOM_TYPE) continue;
     const details = entry.details as { files?: unknown } | undefined;
     const files = details?.files;
     if (!Array.isArray(files)) continue;

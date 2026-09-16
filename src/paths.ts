@@ -1,4 +1,5 @@
 import { realpathSync } from "node:fs";
+import { isAbsolute, relative, sep } from "node:path";
 
 /** msys/git-bash emits `/c/Users/...`; node fs on win32 needs `C:\...`. No-op on POSIX. */
 export function fromBashPath(p: string): string {
@@ -24,6 +25,14 @@ export function fileDedupKey(p: string): string {
   } catch {
     return pathKey(p);
   }
+}
+
+/** Prefer a workspace-relative, slash-normalized display path when contained. */
+export function workspaceDisplayPath(filePath: string, workspace: string): string {
+  const rel = relative(workspace, filePath);
+  const outside = rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel);
+  if (!rel || outside) return filePath;
+  return rel.replace(/\\/g, "/");
 }
 
 /**

@@ -72,6 +72,41 @@ describe("extension factory", () => {
   });
 });
 
+describe("message display", () => {
+  it("renders compact relative paths and expands stored context for the model", () => {
+    let renderer: ((message: unknown, options: unknown, theme: unknown) => { render: (width: number) => string[] }) | undefined;
+    let contextHandler: ((event: { messages: Array<Record<string, unknown>> }) => unknown) | undefined;
+    piXtContext({
+      registerMessageRenderer(_type: string, fn: typeof renderer) {
+        renderer = fn;
+      },
+      registerCommand() {},
+      on(event: string, handler: typeof contextHandler) {
+        if (event === "context") contextHandler = handler;
+      },
+      sendMessage: async () => {},
+    } as never);
+
+    const absolute = join(process.cwd(), ".project", "plans", "AGENTS.md");
+    const message = {
+      customType: "context",
+      content: ".project/plans/AGENTS.md",
+      details: { files: [absolute], context: "## Project Context Files\n\nfull contents" },
+    };
+    const component = renderer!(message, { expanded: false, outputPad: 0 }, {
+      fg: (_name: string, text: string) => text,
+    });
+    expect(component.render(200)[0]).toBe("[context] loaded .project/plans/AGENTS.md");
+
+    const transformed = contextHandler!({
+      messages: [{ role: "custom", ...message }],
+    }) as { messages: Array<{ content: Array<{ text: string }> }> };
+    expect(transformed.messages[0].content[0].text).toBe(
+      "## Project Context Files\n\nfull contents",
+    );
+  });
+});
+
 describe("restoreLoadedFromContext", () => {
   it("rebuilds injected keys from custom messages on the branch", () => {
     const s: State = {
