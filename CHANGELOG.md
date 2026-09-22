@@ -6,6 +6,7 @@ All notable changes to this project are documented in this file.
 
 ### Changed
 
+- Verified against pi 0.87.0 with no code change: the extension reads custom-message entries structurally, and its `context`, `tool_result`, `before_agent_start`, and `session_tree` handlers do not touch the surfaces 0.87 changed.
 - Context transcript rows now use `[context] loaded <workspace-relative paths>`.
 - Session tree rows now use `[context]: <workspace-relative paths>` instead of
   previewing injected context contents. Existing `pi-xt-context` session entries
