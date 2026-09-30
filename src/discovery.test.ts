@@ -9,7 +9,12 @@ import {
   pickNewFiles,
   resolveCdDir,
 } from "./discovery.ts";
-import { fileDedupKey, isUnderOrEqual, workspaceDisplayPath } from "./paths.ts";
+import {
+  fileDedupKey,
+  isContainedIn,
+  isUnderOrEqual,
+  workspaceDisplayPath,
+} from "./paths.ts";
 
 const HOME = "/home/radu";
 const CWD = "/proj/app";
@@ -142,6 +147,23 @@ describe("discoverContextFiles", () => {
       }
     });
   });
+
+  it("`**` patterns never descend into node_modules or .git", async () => {
+    await withTree(async (root) => {
+      const dep = join(root, "node_modules", "dep");
+      const git = join(root, ".git", "objects");
+      await mkdir(dep, { recursive: true });
+      await mkdir(git, { recursive: true });
+      await writeFile(join(root, "AGENTS.md"), "project\n");
+      await writeFile(join(dep, "AGENTS.md"), "vendored\n");
+      await writeFile(join(git, "AGENTS.md"), "vcs\n");
+      const files = await discoverContextFiles(root, root, ["**/AGENTS.md"], {
+        workingDirOnly: true,
+        launchDir: root,
+      });
+      expect(files.map((f) => f.path)).toEqual([join(root, "AGENTS.md")]);
+    });
+  });
 });
 
 describe("buildContextBlock", () => {
@@ -267,6 +289,22 @@ describe("isUnderOrEqual", () => {
   it("handles bash-style drive paths", () => {
     expect(isUnderOrEqual("/d/Projects/LLM Tests/tasktrack", "/d/Projects")).toBe(true);
     expect(isUnderOrEqual("/d/Projects/other", "/d/Projects/LLM")).toBe(false);
+  });
+
+  // realpath resolutions are memoized, so a cached resolution must stay scoped to
+  // the path it came from and never carry a verdict over to a different parent.
+  it("does not carry a resolved path's verdict over to a different parent", async () => {
+    await withTree(async (root) => {
+      const other = await mkdtemp(join(tmpdir(), "pxt-parent-"));
+      try {
+        expect(isContainedIn(other, other)).toBe(true);
+        expect(isContainedIn(other, root)).toBe(false);
+        expect(isContainedIn(root, other)).toBe(false);
+        expect(isContainedIn(root, root)).toBe(true);
+      } finally {
+        await rm(other, { recursive: true, force: true });
+      }
+    });
   });
 
   it("mixes win-style and bash-style formats on win32", () => {

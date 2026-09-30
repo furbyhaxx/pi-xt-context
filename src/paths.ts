@@ -15,13 +15,31 @@ export function pathKey(p: string): string {
 }
 
 /**
+ * realpathSync costs one syscall per path component, and containment is checked
+ * for every ancestor level of every touched directory, so the same handful of
+ * ancestors are resolved over and over. Bounded session memo; only successful
+ * resolutions are cached so unresolvable paths keep throwing as before.
+ */
+const realpathMemo = new Map<string, string>();
+const REALPATH_MEMO_MAX = 1024;
+
+function memoRealpath(p: string): string {
+  const hit = realpathMemo.get(p);
+  if (hit !== undefined) return hit;
+  const real = realpathSync(p);
+  if (realpathMemo.size >= REALPATH_MEMO_MAX) realpathMemo.clear();
+  realpathMemo.set(p, real);
+  return real;
+}
+
+/**
  * Canonical dedup key for a context file: realpath so symlink/junction aliases
  * of the same physical file collapse. Falls back to pathKey when unresolvable.
  * Display always uses the as-found path.
  */
 export function fileDedupKey(p: string): string {
   try {
-    return pathKey(realpathSync(p));
+    return pathKey(memoRealpath(p));
   } catch {
     return pathKey(p);
   }
@@ -51,10 +69,10 @@ export function isUnderOrEqual(child: string, parent: string): boolean {
 /** Containment after resolving symlinks, so a link inside the project cannot leak `/etc`. */
 export function isContainedIn(child: string, parent: string): boolean {
   try {
-    return isUnderOrEqual(realpathSync(child), realpathSync(parent));
+    return isUnderOrEqual(memoRealpath(child), memoRealpath(parent));
   } catch {
     try {
-      return isUnderOrEqual(child, realpathSync(parent));
+      return isUnderOrEqual(child, memoRealpath(parent));
     } catch {
       return isUnderOrEqual(child, parent);
     }
