@@ -25,6 +25,8 @@ Pi extension: auto-load nested context files on directory touch.
 - Await discovery inside `tool_result` so steer lands before the next LLM call
 - Never hand the model the same text twice: read, injected, and post-compaction
   visibility all come from `decide()`, never from an ad-hoc check
+- A file the model read is never injected, but is still tracked for changes —
+  "don't inject it" and "don't tell me it moved" are separate decisions
 - `context` and `session_compact` are the only trustworthy sources for what the
   model can still see (`buildSessionProjection()`), not what was ever injected
 - Do not add `@earendil-works/pi-tui` to package.json (pi aliases it). Vitest uses `test/*-stub.ts`

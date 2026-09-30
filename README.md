@@ -16,7 +16,8 @@ Default pattern: `AGENTS.md`. Configure additional globs in `settings.json`.
 A file is never handed over twice:
 
 - **Read by the agent** — if the session already read it with the `read` tool,
-  it is not injected. The model has it.
+  it is not injected. The model has it. It stays a loaded context file, though,
+  so a later edit still produces the diff notice below.
 - **Unchanged** — injected once. Later touches of the same directory inject
   nothing.
 - **Changed on disk** — a short notice with a bounded diff (30 lines), not a

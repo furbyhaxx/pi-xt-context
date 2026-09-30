@@ -342,8 +342,9 @@ describe("decide", () => {
     expect(decide({ ...fresh, piLoaded: true })).toBe("skip");
   });
 
-  it("drops a file the agent read itself", () => {
+  it("drops a file the agent read itself, but still reports a change to it", () => {
     expect(decide({ ...fresh, agentRead: true })).toBe("skip");
+    expect(decide({ ...fresh, agentRead: true, changed: true })).toBe("notice");
   });
 
   it("injects a file this session has not injected yet", () => {

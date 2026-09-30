@@ -182,6 +182,34 @@ describe("content dedup", () => {
     expect(h.blocks()[0].details.files).toContain(join(leaf(0), "AGENTS.md"));
   });
 
+  it("notices a change to a file the agent read, and never injects it", async () => {
+    const { leaf } = await tree(1);
+    const h = await harness();
+    const file = join(leaf(0), "AGENTS.md");
+    await h.read(file);
+    await h.llmCall();
+    expect(h.blocks().flatMap((b) => b.details.files ?? [])).not.toContain(file);
+
+    await writeFile(file, "leaf 0 rules\nan extra line the agent has not seen\n");
+    await h.nextTurn();
+    await h.touch(leaf(0));
+
+    expect(h.notices()).toHaveLength(1);
+    expect(h.notices()[0].details.text).toContain("+an extra line the agent has not seen");
+    expect(h.notices()[0].details.text).not.toContain("## Project Context Files");
+    expect(h.blocks().flatMap((b) => b.details.files ?? [])).not.toContain(file);
+  });
+
+  it("stays silent for an agent-read file that did not change", async () => {
+    const { leaf } = await tree(1);
+    const h = await harness();
+    await h.read(join(leaf(0), "AGENTS.md"));
+    await h.llmCall();
+    await h.nextTurn();
+    await h.touch(leaf(0));
+    expect(h.notices()).toHaveLength(0);
+  });
+
   it("does not re-read a file it is already holding", async () => {
     const { leaf } = await tree(1);
     const h = await harness();

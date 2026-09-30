@@ -6,6 +6,12 @@ All notable changes to this project are documented in this file.
 
 ## [0.5.0] — 2026-09-30
 
+Minor, not patch: 0.5.0 changes what the model receives in two user-visible ways
+that did not exist in 0.4.1 — diff notices for context files that change on disk
+(including files the model read itself), and re-injection of context a
+compaction boundary dropped. No configuration, command, or settings schema
+changed, so there is nothing to break.
+
 ### Added
 
 - **A context file that changes now produces a diff notice instead of going
@@ -14,12 +20,18 @@ All notable changes to this project are documented in this file.
   existed on disk. A touched directory is now re-checked once per turn: an
   unchanged file injects nothing, a changed one sends a short notice with a
   bounded diff (at most 30 lines, each clipped to 120 characters; a change too
-  large to align is reported as counts). The model is told, and is not given a
-  second copy of a file it already holds.
+  large to align is reported as counts). This covers every loaded context file,
+  including one the model read itself — the model holds a snapshot either way,
+  and must be told when it stops matching disk. The model is told, and is not
+  given a second copy of a file it already holds.
 - **A context file the agent read itself is never injected.** A complete,
   top-level `read` of a discovered context file marks it as already in the
-  session, so discovery skips it. Partial (`offset`/`limit`) and nested reads do
-  not count — the model never saw the whole file in those cases.
+  session, so discovery skips it — and keeps tracking its stamp, so a later edit
+  still produces the notice above. Partial (`offset`/`limit`) and nested reads
+  do not count as having the file — the model never saw the whole file in those
+  cases. If the file is first discovered after the read (no baseline for the
+  stamp the model read), the on-disk state is adopted silently rather than
+  reporting a change that cannot be diffed.
 - **Injected context is restored after compaction drops it.** `session_compact`
   compares the injected set against `sessionManager.buildSessionProjection()`,
   the same projection pi sends to the provider, and re-injects what the boundary

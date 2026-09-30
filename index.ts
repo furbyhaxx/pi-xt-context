@@ -394,6 +394,18 @@ export default function piXtContext(pi: ExtensionAPI) {
       const key = fileDedupKey(file.path);
       keys.push(key);
       const tracked = s.tracked.get(key);
+      if (s.agentRead.has(key) && !tracked) {
+        // The agent read this file itself, so it is never injected — but it is
+        // a loaded context file, and this read is the best baseline we have for
+        // its stamp. Adopting silently beats reporting a change we cannot diff.
+        s.tracked.set(key, {
+          path: file.path,
+          key,
+          scopeDir: file.scopeDir,
+          stamp: file.stamp,
+        });
+        continue;
+      }
       const action = decide({
         piLoaded: s.piLoadedPaths.has(key),
         agentRead: s.agentRead.has(key),
@@ -571,14 +583,16 @@ export default function piXtContext(pi: ExtensionAPI) {
         ? {
             currentDir: state.currentDir,
             launchDir: state.launchDir,
-            extensionFiles: [...state.tracked.values()].map(
-              (t): ExtensionLoadedFile => ({
-                path: t.path,
-                key: t.key,
-                scopeDir: t.scopeDir,
-                stamp: t.stamp,
-              }),
-            ),
+            extensionFiles: [...state.tracked.values()]
+              .filter((t) => !state!.agentRead.has(t.key))
+              .map(
+                (t): ExtensionLoadedFile => ({
+                  path: t.path,
+                  key: t.key,
+                  scopeDir: t.scopeDir,
+                  stamp: t.stamp,
+                }),
+              ),
           }
         : null,
     getConfig: () => config,
