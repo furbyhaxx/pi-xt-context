@@ -1,6 +1,6 @@
 {
   "name": "pi-xt-context",
-  "version": "0.4.1",
+  "version": "0.5.0",
   "description": "Pi extension. Auto-loads nested context files (default: AGENTS.md) when the model works in a directory — via bash cd or any file tool. Injected once, durably; configured from settings.json.",
   "keywords": [
     "pi-package",
@@ -10,7 +10,8 @@
   ],
   "type": "module",
   "scripts": {
-    "test": "vitest run"
+    "test": "vitest run",
+    "bench": "node bench/make-tree.mjs /tmp/pxt-bench 300 && PI_CODING_AGENT_DIR=/tmp/pxt-bench mkdir -p /tmp/pxt-bench-agent && PI_CODING_AGENT_DIR=/tmp/pxt-bench-agent strace -f -qq -o /tmp/pxt-bench.trace node --experimental-transform-types --import ./bench/alias.mjs bench/dedup.mjs /tmp/pxt-bench"
   },
   "dependencies": {
     "proper-lockfile": "^4.1.2",
@@ -36,6 +37,9 @@
     "index.ts",
     "src/commands.ts",
     "src/config.ts",
+    "src/content.ts",
+    "src/decide.ts",
+    "src/diff.ts",
     "src/discovery.ts",
     "src/loaded.ts",
     "src/paths.ts",

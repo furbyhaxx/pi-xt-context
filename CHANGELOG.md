@@ -4,13 +4,47 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-09-30
+
+### Added
+
+- **A context file that changes now produces a diff notice instead of going
+  stale, and never a second copy.** Previously a file modified mid-session was
+  simply never re-injected, so the model kept working from text that no longer
+  existed on disk. A touched directory is now re-checked once per turn: an
+  unchanged file injects nothing, a changed one sends a short notice with a
+  bounded diff (at most 30 lines, each clipped to 120 characters; a change too
+  large to align is reported as counts). The model is told, and is not given a
+  second copy of a file it already holds.
+- **A context file the agent read itself is never injected.** A complete,
+  top-level `read` of a discovered context file marks it as already in the
+  session, so discovery skips it. Partial (`offset`/`limit`) and nested reads do
+  not count — the model never saw the whole file in those cases.
+- **Injected context is restored after compaction drops it.** `session_compact`
+  compares the injected set against `sessionManager.buildSessionProjection()`,
+  the same projection pi sends to the provider, and re-injects what the boundary
+  hid while the file's directory is still in scope. Each injected block records
+  the `{mtimeMs, size}` it was built from, so a restored session can still tell
+  a later change from a stale model.
+
 ### Changed
 
-- Verified against pi 0.87.0 with no code change: the extension reads custom-message entries structurally, and its `context`, `tool_result`, `before_agent_start`, and `session_tree` handlers do not touch the surfaces 0.87 changed.
-- Context transcript rows now use `[context] loaded <workspace-relative paths>`.
+- **Context file contents are read once per file, not once per directory.** The
+  ancestor walk deduplicated *after* reading, so a shared `AGENTS.md` was
+  re-read for every directory below it and `state.dirContexts` retained the full
+  text of every file per touched directory for the whole session. Contents now
+  live in one memo keyed by path and validated by `{mtimeMs, size}`; a touched
+  directory records only the keys it contributed. Measured on the 300-leaf
+  benchmark (`npm run bench`, 303 context files): 1,200 → 303 file reads (3.96x
+  redundancy → none) and 165,220 → ~133,000 total syscalls (−19%). Syscalls that
+  touch the tree rise 9,920 → 11,723, because an unchanged file is now
+  validated with a stat instead of re-read.
+- Context transcript rows now use `[context] loaded <workspace-relative paths>`,
+  and change notices render as `[context] changed <path>`.
 - Session tree rows now use `[context]: <workspace-relative paths>` instead of
   previewing injected context contents. Existing `pi-xt-context` session entries
   remain supported.
+- Verified against pi 0.87.0 with no code change: the extension reads custom-message entries structurally, and its handlers do not touch the surfaces 0.87 changed.
 
 ## [0.4.1] — 2026-09-30
 
