@@ -12,6 +12,24 @@ All notable changes to this project are documented in this file.
   previewing injected context contents. Existing `pi-xt-context` session entries
   remain supported.
 
+## [0.4.1] — 2026-09-30
+
+### Fixed
+
+- **Context discovery no longer re-resolves the same paths for every touched
+  directory.** `realpathSync` costs one syscall per path component and was being
+  called twice per ancestor level per touched directory — 87,962 `statx` calls to
+  walk 300 directories over two passes, of which 95% came from re-resolving
+  ancestors that had not changed. Resolved paths are now memoized in a bounded
+  (1024-entry) session cache. Measured on a 300-leaf tree: 87,962 → 8,329
+  `statx` (−90.5%), 109,654 → 30,026 total filesystem syscalls (−72.6%), and
+  2,366 ms → 1,414 ms median wall time.
+- **Glob patterns no longer walk dependency and VCS trees.** A `context.files`
+  entry such as `**/AGENTS.md` descended into `node_modules` and `.git` at every
+  ancestor of every touched directory, matching vendored files as project
+  context. Both trees are now excluded from glob expansion. Non-glob patterns
+  (the `AGENTS.md` default) are unaffected.
+
 ## [0.4.0] — 2026-09-11
 
 Forked as **pi-xt-context**. Breaking config and command changes; historical

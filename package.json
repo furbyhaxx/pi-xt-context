@@ -1,6 +1,6 @@
 {
   "name": "pi-xt-context",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Pi extension. Auto-loads nested context files (default: AGENTS.md) when the model works in a directory — via bash cd or any file tool. Injected once, durably; configured from settings.json.",
   "keywords": [
     "pi-package",
