@@ -95,6 +95,9 @@ async function matchPattern(dir: string, pattern: string): Promise<string[]> {
       expandDirectories: false,
       caseSensitiveMatch: process.platform !== "win32",
       braceExpansion: true,
+      // `**` patterns would otherwise descend into dependency and VCS trees on
+      // every ancestor of every touched directory; nothing there is project context.
+      ignore: ["**/node_modules/**", "**/.git/**"],
     });
   } catch (err) {
     console.error(`pi-xt-context: glob ${JSON.stringify(pattern)} in ${dir}: ${err}`);
