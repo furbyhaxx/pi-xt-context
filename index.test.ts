@@ -38,6 +38,7 @@ describe("extension factory", () => {
               details: { files: [join(cwd, "AGENTS.md")] },
             },
           ],
+          buildSessionProjection: () => ({ entries: [], messages: [] }),
         },
       };
       for (const h of sessionHandlers) h({ reason: "startup" }, ctx);
@@ -74,11 +75,11 @@ describe("extension factory", () => {
 
 describe("message display", () => {
   it("renders compact relative paths and expands stored context for the model", () => {
-    let renderer: ((message: unknown, options: unknown, theme: unknown) => { render: (width: number) => string[] }) | undefined;
+    const renderers: Record<string, typeof renderer> = {};
     let contextHandler: ((event: { messages: Array<Record<string, unknown>> }) => unknown) | undefined;
     piXtContext({
-      registerMessageRenderer(_type: string, fn: typeof renderer) {
-        renderer = fn;
+      registerMessageRenderer(type: string, fn: typeof renderer) {
+        renderers[type] = fn;
       },
       registerCommand() {},
       on(event: string, handler: typeof contextHandler) {
@@ -93,10 +94,14 @@ describe("message display", () => {
       content: ".project/plans/AGENTS.md",
       details: { files: [absolute], context: "## Project Context Files\n\nfull contents" },
     };
-    const component = renderer!(message, { expanded: false, outputPad: 0 }, {
-      fg: (_name: string, text: string) => text,
-    });
-    expect(component.render(200)[0]).toBe("[context] loaded .project/plans/AGENTS.md");
+    const theme = { fg: (_name: string, text: string) => text };
+    expect(renderers["context"]!(message, { expanded: false, outputPad: 0 }, theme).render(200)[0])
+      .toBe("[context] loaded .project/plans/AGENTS.md");
+    expect(renderers["context-changed"]!(
+      { details: { file: absolute, text: "## Context File Changed" } },
+      { expanded: false, outputPad: 0 },
+      theme,
+    ).render(200)[0]).toBe("[context] changed .project/plans/AGENTS.md");
 
     const transformed = contextHandler!({
       messages: [{ role: "custom", ...message }],
@@ -104,20 +109,34 @@ describe("message display", () => {
     expect(transformed.messages[0].content[0].text).toBe(
       "## Project Context Files\n\nfull contents",
     );
+
+    const notice = contextHandler!({
+      messages: [{ role: "custom", customType: "context-changed", details: { file: absolute, text: "diff" } }],
+    }) as { messages: Array<{ content: Array<{ text: string }> }> };
+    expect(notice.messages[0].content[0].text).toBe("diff");
   });
 });
 
 describe("restoreLoadedFromContext", () => {
-  it("rebuilds injected keys from custom messages on the branch", () => {
+  it("rebuilds injected files from custom messages on the branch", () => {
     const s: State = {
       currentDir: "/proj",
       dirContexts: new Map(),
       piLoadedPaths: new Set(),
-      injected: new Set(["stale"]),
+      agentRead: new Set(),
+      tracked: new Map([["stale", {
+        path: "/proj/stale/AGENTS.md",
+        key: "stale",
+        scopeDir: "/proj",
+        stamp: { mtimeMs: 0, size: 0 },
+      }]]),
+      live: new Set(),
+      pending: new Set(),
+      liveKnown: false,
       inFlight: new Set(),
       launchDir: "/proj",
       scanGeneration: 0,
-      extensionFiles: [],
+      turn: 0,
     };
     restoreLoadedFromContext(s, {
       sessionManager: {
@@ -128,10 +147,45 @@ describe("restoreLoadedFromContext", () => {
             details: { files: ["/proj/app/AGENTS.md"] },
           },
         ],
+        buildSessionProjection: () => ({ entries: [], messages: [] }),
       },
     } as never);
-    expect(s.injected.has("stale")).toBe(false);
-    expect(s.extensionFiles.map((f) => f.path)).toEqual(["/proj/app/AGENTS.md"]);
-    expect(s.injected.size).toBe(1);
+    expect(s.tracked.has("stale")).toBe(false);
+    expect([...s.tracked.values()].map((f) => f.path)).toEqual(["/proj/app/AGENTS.md"]);
+    expect(s.tracked.size).toBe(1);
+  });
+
+  it("keeps the stamp of an injected copy so a restored session can diff a change", () => {
+    const s: State = {
+      currentDir: "/proj",
+      dirContexts: new Map(),
+      piLoadedPaths: new Set(),
+      agentRead: new Set(),
+      tracked: new Map(),
+      live: new Set(),
+      pending: new Set(),
+      liveKnown: false,
+      inFlight: new Set(),
+      launchDir: "/proj",
+      scanGeneration: 0,
+      turn: 0,
+    };
+    restoreLoadedFromContext(s, {
+      sessionManager: {
+        getBranch: () => [
+          {
+            type: "custom_message",
+            customType: "context",
+            details: {
+              files: ["/proj/AGENTS.md"],
+              context: "…",
+              meta: [{ path: "/proj/AGENTS.md", scopeDir: "/proj", mtimeMs: 7, size: 11 }],
+            },
+          },
+        ],
+        buildSessionProjection: () => ({ entries: [], messages: [] }),
+      },
+    } as never);
+    expect(s.tracked.get("/proj/AGENTS.md")?.stamp).toEqual({ mtimeMs: 7, size: 11 });
   });
 });

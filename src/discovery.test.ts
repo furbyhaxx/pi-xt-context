@@ -6,9 +6,9 @@ import {
   buildContextBlock,
   dirForToolEvent,
   discoverContextFiles,
-  pickNewFiles,
   resolveCdDir,
 } from "./discovery.ts";
+import { decide } from "./decide.ts";
 import {
   fileDedupKey,
   isContainedIn,
@@ -172,11 +172,13 @@ describe("buildContextBlock", () => {
       {
         path: "/proj/.pi/context/rules.md",
         content: "rules",
+        stamp: { mtimeMs: 1, size: 5 },
         scopeDir: "/proj/app",
       },
       {
         path: "/proj/AGENTS.md",
         content: "root",
+        stamp: { mtimeMs: 1, size: 4 },
         scopeDir: "/proj",
       },
     ]);
@@ -324,31 +326,44 @@ describe("isUnderOrEqual", () => {
   });
 });
 
-describe("pickNewFiles", () => {
-  const f = (path: string) => ({ path, content: `# ${path}`, scopeDir: dirname(path) });
+// pickNewFiles used to implement "inject if never injected"; that contract now
+// lives in decide(), which also knows what is still in the model's context.
+describe("decide", () => {
+  const fresh = {
+    piLoaded: false,
+    agentRead: false,
+    injected: false,
+    live: false,
+    liveKnown: true,
+    changed: false,
+  };
 
   it("drops files pi already loaded at startup", () => {
-    const claude = "/proj/CLAUDE.md";
-    const s = {
-      piLoadedPaths: new Set([fileDedupKey(claude)]),
-      injected: new Set<string>(),
-    };
-    const out = pickNewFiles(s, [f("/proj/app/CLAUDE.md"), f(claude)]);
-    expect(out.map((x) => x.path)).toEqual(["/proj/app/CLAUDE.md"]);
+    expect(decide({ ...fresh, piLoaded: true })).toBe("skip");
   });
 
-  it("dedups a parent file shared across two dirs (marks injected)", () => {
-    const s = { piLoadedPaths: new Set<string>(), injected: new Set<string>() };
-    const first = pickNewFiles(s, [f("/proj/a/CLAUDE.md"), f("/proj/CLAUDE.md")]);
-    expect(first.map((x) => x.path)).toEqual(["/proj/a/CLAUDE.md", "/proj/CLAUDE.md"]);
-    const second = pickNewFiles(s, [f("/proj/b/CLAUDE.md"), f("/proj/CLAUDE.md")]);
-    expect(second.map((x) => x.path)).toEqual(["/proj/b/CLAUDE.md"]);
+  it("drops a file the agent read itself", () => {
+    expect(decide({ ...fresh, agentRead: true })).toBe("skip");
   });
 
-  it("preserves input order (caller passes deepest-first)", () => {
-    const s = { piLoadedPaths: new Set<string>(), injected: new Set<string>() };
-    const out = pickNewFiles(s, [f("/proj/a/b/CLAUDE.md"), f("/proj/CLAUDE.md")]);
-    expect(out.map((x) => x.path)).toEqual(["/proj/a/b/CLAUDE.md", "/proj/CLAUDE.md"]);
+  it("injects a file this session has not injected yet", () => {
+    expect(decide(fresh)).toBe("inject");
+  });
+
+  it("skips a shared ancestor whose injected copy is still live", () => {
+    expect(decide({ ...fresh, injected: true, live: true })).toBe("skip");
+  });
+
+  it("notifies instead of re-injecting when a live file changed", () => {
+    expect(decide({ ...fresh, injected: true, live: true, changed: true })).toBe("notice");
+  });
+
+  it("re-injects a file a compaction boundary dropped", () => {
+    expect(decide({ ...fresh, injected: true, live: false })).toBe("inject");
+  });
+
+  it("assumes a still-live copy until a context event says otherwise", () => {
+    expect(decide({ ...fresh, injected: true, live: false, liveKnown: false })).toBe("skip");
   });
 });
 
@@ -372,13 +387,24 @@ describe("fileDedupKey", () => {
       await mkdir(real, { recursive: true });
       await writeFile(join(real, "AGENTS.md"), "x\n");
       await symlink(real, link, process.platform === "win32" ? "junction" : "dir");
-      const s = { piLoadedPaths: new Set<string>(), injected: new Set<string>() };
-      const out = pickNewFiles(s, [
-        { path: join(real, "AGENTS.md"), content: "x\n", scopeDir: real },
-        { path: join(link, "AGENTS.md"), content: "x\n", scopeDir: link },
-      ]);
-      expect(out).toHaveLength(1);
-      expect(out[0].path).toBe(join(real, "AGENTS.md"));
+      const realKey = fileDedupKey(join(real, "AGENTS.md"));
+      expect(realKey).toBe(fileDedupKey(join(link, "AGENTS.md")));
+      const seen = new Set<string>();
+      const pick = (path: string) => {
+        const key = fileDedupKey(path);
+        const action = decide({
+          piLoaded: false,
+          agentRead: false,
+          injected: seen.has(key),
+          live: true,
+          liveKnown: true,
+          changed: false,
+        });
+        seen.add(key);
+        return action;
+      };
+      expect(pick(join(real, "AGENTS.md"))).toBe("inject");
+      expect(pick(join(link, "AGENTS.md"))).toBe("skip");
     });
   });
 });

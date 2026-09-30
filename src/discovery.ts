@@ -1,26 +1,29 @@
-import { readFile, stat } from "node:fs/promises";
+import { stat } from "node:fs/promises";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { glob } from "tinyglobby";
-import { fileDedupKey, fromBashPath, isContainedIn, pathKey } from "./paths.ts";
+import { readContextFile, type FileStamp } from "./content.ts";
+import { fromBashPath, isContainedIn, pathKey } from "./paths.ts";
 
 const FILE_PATH_TOOLS = new Set(["read", "edit", "write"]);
 const DIR_PATH_TOOLS = new Set(["grep", "ls", "find"]);
-
-/** Cap per-file size so one huge/hostile context file can't blow the prompt. */
-export const MAX_FILE_BYTES = 64 * 1024;
 
 const GLOB_MAGIC = /[*?[{\]]/;
 
 export interface ContextFile {
   path: string;
   content: string;
+  /** On-disk identity of `content`, so a later change is detectable without a read. */
+  stamp: FileStamp;
   /** Directory at which the matching pattern was expanded (not the file's dirname). */
   scopeDir: string;
 }
 
 export interface DirState {
   dir: string;
-  files: ContextFile[];
+  /** Dedup keys of the context files this directory contributed, never their text. */
+  files: string[];
+  /** Turn whose change check already ran for this directory. */
+  turn: number;
 }
 
 export interface DiscoverOptions {
@@ -83,6 +86,7 @@ async function matchPattern(dir: string, pattern: string): Promise<string[]> {
   if (!hasGlobMagic(pattern)) {
     const segs = pattern.split("/").filter((s) => s.length > 0 && s !== ".");
     const filePath = segs.length === 0 ? dir : join(dir, ...segs);
+    // A miss must not reach the containment check: that costs a realpath walk.
     return (await isRegularFile(filePath)) ? [filePath] : [];
   }
   try {
@@ -102,19 +106,6 @@ async function matchPattern(dir: string, pattern: string): Promise<string[]> {
   } catch (err) {
     console.error(`pi-xt-context: glob ${JSON.stringify(pattern)} in ${dir}: ${err}`);
     return [];
-  }
-}
-
-async function readCapped(filePath: string): Promise<string | null> {
-  try {
-    let content = await readFile(filePath, "utf-8");
-    if (content.length > MAX_FILE_BYTES) {
-      content = content.slice(0, MAX_FILE_BYTES) + "\n\n[...truncated]";
-    }
-    if (content.trim().length === 0) return null;
-    return content;
-  } catch {
-    return null;
   }
 }
 
@@ -160,9 +151,9 @@ export async function discoverContextFiles(
       const key = pathKey(filePath);
       if (found.has(key)) continue;
       if (opts.workingDirOnly && !isContainedIn(filePath, launchDir)) continue;
-      const content = await readCapped(filePath);
-      if (content === null) continue;
-      found.set(key, { path: filePath, content, scopeDir: dir });
+      const text = await readContextFile(filePath);
+      if (!text) continue;
+      found.set(key, { path: text.path, content: text.content, stamp: text.stamp, scopeDir: dir });
     }
 
     if (pathKey(dir) === pathKey(stopAt)) break;
@@ -172,20 +163,6 @@ export async function discoverContextFiles(
   }
 
   return [...found.values()];
-}
-
-export function pickNewFiles(
-  s: { piLoadedPaths: Set<string>; injected: Set<string> },
-  files: ContextFile[],
-): ContextFile[] {
-  const out: ContextFile[] = [];
-  for (const f of files) {
-    const key = fileDedupKey(f.path);
-    if (s.piLoadedPaths.has(key) || s.injected.has(key)) continue;
-    s.injected.add(key);
-    out.push(f);
-  }
-  return out;
 }
 
 export function buildContextBlock(files: ContextFile[]): string {

@@ -98,7 +98,10 @@ describe("mergeListedFiles", () => {
   it("prefers Pi origin when the same file was also injected", () => {
     const listed = mergeListedFiles(
       [{ path: "/proj/AGENTS.md" }],
-      [{ path: "/proj/AGENTS.md", key: "/proj/AGENTS.md" }, { path: "/proj/app/AGENTS.md", key: "/proj/app/AGENTS.md" }],
+      [
+        { path: "/proj/AGENTS.md", key: "/proj/AGENTS.md", scopeDir: "/proj", stamp: { mtimeMs: 1, size: 1 } },
+        { path: "/proj/app/AGENTS.md", key: "/proj/app/AGENTS.md", scopeDir: "/proj/app", stamp: { mtimeMs: 1, size: 1 } },
+      ],
     );
     expect(listed).toEqual([
       { path: "/proj/AGENTS.md", source: "pi" },
@@ -128,7 +131,14 @@ describe("/context command", () => {
         getState: () => ({
           currentDir: join(cwd, "app"),
           launchDir: cwd,
-          extensionFiles: [{ path: join(cwd, "app", "AGENTS.md"), key: "k" }],
+          extensionFiles: [
+            {
+              path: join(cwd, "app", "AGENTS.md"),
+              key: "k",
+              scopeDir: join(cwd, "app"),
+              stamp: { mtimeMs: 1, size: 1 },
+            },
+          ],
         }),
         getConfig: () => cfg,
         setConfig: () => {
