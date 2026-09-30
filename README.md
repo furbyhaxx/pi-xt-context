@@ -11,6 +11,22 @@ nested files once, durably, before the model's next response.
 
 Default pattern: `AGENTS.md`. Configure additional globs in `settings.json`.
 
+## What the model receives
+
+A file is never handed over twice:
+
+- **Read by the agent** — if the session already read it with the `read` tool,
+  it is not injected. The model has it.
+- **Unchanged** — injected once. Later touches of the same directory inject
+  nothing.
+- **Changed on disk** — a short notice with a bounded diff (30 lines), not a
+  second copy of the file. Read it again if the change matters.
+- **Dropped by compaction** — if pi's compaction hid the injected block and the
+  directory is still in scope, the file is injected again, because the model no
+  longer holds it.
+
+Ancestor files shared by many directories are read once per session and reused.
+
 ## Install
 
 ```bash
@@ -52,6 +68,9 @@ npm test
 ```
 
 No build step: pi loads `index.ts` (and `src/`) as TypeScript.
+
+`npm run bench` measures context-file reads and syscalls over a synthetic
+300-leaf tree (needs `strace`).
 
 ## License
 
