@@ -1,4 +1,6 @@
-import { createRequire } from "node:module";
+// Use the extension loader's import path: createRequire bypasses it and Pi-Bolt
+// 0.7.0 then fails to resolve proper-lockfile's installed graceful-fs dependency.
+import lockfile from "proper-lockfile";
 import {
   existsSync,
   mkdirSync,
@@ -7,11 +9,6 @@ import {
 } from "node:fs";
 import { dirname, isAbsolute, join } from "node:path";
 import { CONFIG_DIR_NAME, getAgentDir } from "@earendil-works/pi-coding-agent";
-
-const require = createRequire(import.meta.url);
-const lockfile = require("proper-lockfile") as {
-  lockSync: (file: string, opts?: { realpath?: boolean }) => () => void;
-};
 
 export type Provenance = "default" | "user" | "project";
 export type ConfigKey = "workingDirOnly" | "hideContents" | "files";

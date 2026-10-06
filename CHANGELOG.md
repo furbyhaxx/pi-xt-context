@@ -4,6 +4,13 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- Load `proper-lockfile` through a normal import rather than `createRequire`, so
+  compiled Pi-Bolt 0.7.0 can resolve its `graceful-fs` dependency. Settings locking
+  is unchanged. Added settings-lock tests and an opt-in real-Bolt startup test
+  (`PI_BOLT_BINARY=/path/to/pi-bolt npm test`).
+
 ## [0.5.0] — 2026-09-30
 
 Minor, not patch: 0.5.0 changes what the model receives in two user-visible ways
