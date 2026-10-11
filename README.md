@@ -9,11 +9,12 @@ Pi already loads context for the **launch directory** at startup. Deeper trees
 stay invisible until something in them is touched. This extension injects those
 nested files once, durably, before the model's next response.
 
-Default pattern: `AGENTS.md`. Configure additional globs in `settings.json`.
+Default pattern: `AGENTS.md`. Configure include and exclusion globs in
+`settings.json`; for example, `"exclude": ["reference/**"]` skips cloned trees.
 
 ## What the model receives
 
-A file is never handed over twice:
+A file already visible to the model is not automatically injected again:
 
 - **Read by the agent** — if the session already read it with the `read` tool,
   it is not injected. The model has it. It stays a loaded context file, though,
@@ -26,7 +27,9 @@ A file is never handed over twice:
   directory is still in scope, the file is injected again, because the model no
   longer holds it.
 
-Ancestor files shared by many directories are read once per session and reused.
+Ancestor files shared by many directories are read once and reused. Parent and
+subagent sessions keep independent injection state, including when they run in
+the same process.
 
 ## Install
 

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -45,10 +45,11 @@ afterEach(async () => {
 });
 
 /** Mirrors pi: `visible` is the projection the model actually receives. */
-async function harness(branch: unknown[] = []) {
+async function harness(branch: unknown[] = [], sendDelayMs = 0, queueSteers = false) {
   const handlers = new Map<string, Array<(e: unknown, c: unknown) => unknown>>();
   const messages: SentMessage[] = [];
   let visible: unknown[] = [];
+  const queued: unknown[] = [];
   let turn = 0;
 
   const pi = {
@@ -60,8 +61,10 @@ async function harness(branch: unknown[] = []) {
       handlers.set(event, list);
     },
     sendMessage: async (message: SentMessage) => {
+      if (sendDelayMs > 0) await new Promise((done) => setTimeout(done, sendDelayMs));
       messages.push(message);
-      visible.push({ role: "custom", details: message.details, ...message });
+      branch.push({ type: "custom_message", ...message });
+      (queueSteers ? queued : visible).push({ role: "custom", details: message.details, ...message });
     },
   };
   const ctx = {
@@ -88,6 +91,9 @@ async function harness(branch: unknown[] = []) {
 
   return {
     messages,
+    async reload() {
+      await run("session_start", { type: "session_start", reason: "reload" });
+    },
     blocks: () => messages.filter((m) => m.customType === "context"),
     notices: () => messages.filter((m) => m.customType === "context-changed"),
     async touch(dir: string) {
@@ -99,11 +105,11 @@ async function harness(branch: unknown[] = []) {
         isError: false,
       });
     },
-    async read(file: string) {
+    async read(file: string, input: Record<string, unknown> = {}) {
       await run("tool_result", {
         type: "tool_result",
         toolName: "read",
-        input: { path: file },
+        input: { path: file, ...input },
         content: [{ type: "text", text: "…body…" }],
         isError: false,
       });
@@ -114,6 +120,7 @@ async function harness(branch: unknown[] = []) {
     },
     /** The model's next view of the conversation. */
     async llmCall() {
+      if (queued.length > 0) visible.push(queued.shift());
       const result = (await run("context", { type: "context", messages: visible })) as
         | { messages: unknown[] }
         | undefined;
@@ -151,6 +158,52 @@ async function tree(leaves: number): Promise<{ root: string; leaf: (i: number) =
 }
 
 describe("content dedup", () => {
+  it("isolates parent and subagent extension instances", async () => {
+    await tree(1);
+    const parent = await harness();
+    await parent.touch(root);
+    await parent.llmCall();
+    const child = await harness();
+    await child.llmCall();
+    await parent.nextTurn();
+    await parent.touch(root);
+    expect(parent.blocks()).toHaveLength(1);
+    await child.touch(root);
+    expect(child.blocks()).toHaveLength(1);
+  });
+
+  it("injects each shared file once across concurrent directory touches", async () => {
+    const { leaf } = await tree(5);
+    const h = await harness([], 30);
+    await Promise.all(Array.from({ length: 5 }, (_, i) => h.touch(leaf(i))));
+    const paths = h.blocks().flatMap((b) => b.details.files ?? []);
+    expect(paths).toHaveLength(8);
+    expect(new Set(paths).size).toBe(paths.length);
+  });
+
+  it("keeps queued blocks pending until a context event actually sees them", async () => {
+    const { leaf } = await tree(2);
+    const h = await harness([], 0, true);
+    await h.touch(leaf(0));
+    await h.touch(leaf(1));
+    expect(h.blocks()).toHaveLength(2);
+    await h.llmCall();
+    await h.nextTurn();
+    await h.touch(leaf(1));
+    expect(h.blocks()).toHaveLength(2);
+    await h.llmCall();
+    await h.nextTurn();
+    await h.touch(leaf(1));
+    expect(h.blocks()).toHaveLength(2);
+  });
+
+  it("treats null read pagination as a complete read", async () => {
+    await tree(1);
+    const h = await harness();
+    const file = join(root, "AGENTS.md");
+    await h.read(file, { offset: null, limit: null });
+    expect(h.blocks().flatMap((b) => b.details.files ?? [])).not.toContain(file);
+  });
   it("reads a shared ancestor once and serves every directory below it", async () => {
     const { leaf } = await tree(5);
     const h = await harness();
@@ -243,6 +296,46 @@ describe("change notification", () => {
     expect(text.split("\n").length).toBeLessThan(60);
   });
 
+  it("stays silent when only a file timestamp changed", async () => {
+    await tree(1);
+    const h = await harness();
+    await h.touch(root);
+    await h.llmCall();
+    const later = new Date(Date.now() + 10_000);
+    await utimes(join(root, "AGENTS.md"), later, later);
+    await h.nextTurn();
+    await h.touch(root);
+    expect(h.messages).toHaveLength(1);
+  });
+
+  it("reports each new revision once, across later turns and directories", async () => {
+    const { leaf } = await tree(2);
+    const h = await harness();
+    await h.touch(leaf(0));
+    await h.llmCall();
+    const file = join(root, "AGENTS.md");
+    await writeFile(file, "root rules\nfirst addition\n");
+    await h.nextTurn();
+    await h.touch(leaf(0));
+    await h.llmCall();
+    await h.nextTurn();
+    await h.touch(leaf(1));
+    expect(h.notices()).toHaveLength(1);
+    await writeFile(file, "root rules\nfirst addition\nsecond addition\n");
+    await h.nextTurn();
+    await h.touch(leaf(1));
+    expect(h.notices()).toHaveLength(2);
+    expect(h.notices()[1].details.text).toContain("+second addition");
+    expect(h.notices()[1].details.text).not.toContain("+first addition");
+    await h.llmCall();
+    await writeFile(file, "root rules\nfirst addition\nsecond addition\nthird addition\n");
+    await h.nextTurn();
+    await h.touch(leaf(0));
+    expect(h.notices()).toHaveLength(3);
+    expect(h.notices()[2].details.text).toContain("+third addition");
+    expect(h.notices()[2].details.text).not.toContain("+second addition");
+  });
+
   it("sends nothing at all when nothing changed", async () => {
     const { leaf } = await tree(1);
     const h = await harness();
@@ -267,6 +360,33 @@ describe("change notification", () => {
     const diffLines = text.split("```diff\n")[1].split("\n```")[0].split("\n");
     expect(diffLines.length).toBeLessThanOrEqual(31);
     expect(text).toContain("more changed line(s)");
+  });
+});
+
+describe("exclusion boundaries", () => {
+  it("never reads or injects excluded context from a nested tool touch", async () => {
+    const { leaf } = await tree(1);
+    await writeFile(join(agentDir, "settings.json"), JSON.stringify({ context: { exclude: ["pkg/**"] } }));
+    const h = await harness();
+    await h.touch(leaf(0));
+    expect(h.blocks().flatMap((b) => b.details.files ?? [])).toEqual([join(root, "AGENTS.md")]);
+    expect(reads.some((p) => p.startsWith(join(root, "pkg")))).toBe(false);
+  });
+
+  it("stops notices and compaction reinjection after exclusions are saved", async () => {
+    const { leaf } = await tree(1);
+    const h = await harness();
+    await h.touch(leaf(0));
+    await h.llmCall();
+    await writeFile(join(agentDir, "settings.json"), JSON.stringify({ context: { exclude: ["pkg/**"] } }));
+    await h.reload();
+    await writeFile(join(leaf(0), "AGENTS.md"), "excluded revision\n");
+    await h.nextTurn();
+    await h.touch(leaf(0));
+    expect(h.notices()).toHaveLength(0);
+    await h.compact(true);
+    expect(h.blocks()).toHaveLength(2);
+    expect(h.blocks()[1].details.files).toEqual([join(root, "AGENTS.md")]);
   });
 });
 

@@ -11,7 +11,7 @@ import { dirname, isAbsolute, join } from "node:path";
 import { CONFIG_DIR_NAME, getAgentDir } from "@earendil-works/pi-coding-agent";
 
 export type Provenance = "default" | "user" | "project";
-export type ConfigKey = "workingDirOnly" | "hideContents" | "files";
+export type ConfigKey = "workingDirOnly" | "hideContents" | "files" | "exclude";
 
 export interface Config {
   /** Only load context files under pi's launch (working) dir. Default true. */
@@ -20,18 +20,22 @@ export interface Config {
   hideContents: boolean;
   /** Glob patterns relative to each walked directory. Default `["AGENTS.md"]`. */
   files: string[];
+  /** Glob patterns relative to the launch directory that discovery skips. Default `[]`. */
+  exclude: string[];
 }
 
 export const DEFAULT_CONFIG: Config = {
   workingDirOnly: true,
   hideContents: false,
   files: ["AGENTS.md"],
+  exclude: [],
 };
 
 export const CONFIG_KEYS: ConfigKey[] = [
   "workingDirOnly",
   "hideContents",
   "files",
+  "exclude",
 ];
 
 export interface LoadedConfig {
@@ -49,6 +53,7 @@ export type ContextPatch = {
   workingDirOnly?: boolean | null;
   hideContents?: boolean | null;
   files?: string[] | null;
+  exclude?: string[] | null;
 };
 
 export function userSettingsPath(): string {
@@ -88,41 +93,61 @@ export function normalizePattern(pattern: string): string {
   return p;
 }
 
-function parseFilesValue(
+type PatternKey = "files" | "exclude";
+
+function validateConfigPattern(pattern: string, key: PatternKey): string | null {
+  if (key === "exclude" && pattern.startsWith("!")) {
+    return "negated patterns are not supported";
+  }
+  return validatePattern(pattern);
+}
+
+function parseConfigPattern(
+  pattern: string,
+  key: PatternKey,
+): { pattern: string } | { error: string } {
+  const normalized = normalizePattern(pattern);
+  const error = validateConfigPattern(normalized, key);
+  if (error) return { error };
+  const value = key === "exclude" ? normalized.replace(/\/+$/, "") : normalized;
+  return value ? { pattern: value } : { error: "empty pattern" };
+}
+
+function parsePatternValue(
   raw: unknown,
   label: string,
-): { files?: string[]; diagnostics: string[] } {
+  key: PatternKey,
+): { patterns?: string[]; diagnostics: string[] } {
   const diagnostics: string[] = [];
   if (!Array.isArray(raw)) {
-    diagnostics.push(`${label}: files must be an array of glob strings`);
+    diagnostics.push(`${label}: ${key} must be an array of glob strings`);
     return { diagnostics };
   }
-  const files: string[] = [];
+  const patterns: string[] = [];
   const seen = new Set<string>();
   let invalid = 0;
   for (const item of raw) {
     if (typeof item !== "string") {
-      diagnostics.push(`${label}: files entries must be strings`);
+      diagnostics.push(`${label}: ${key} entries must be strings`);
       invalid++;
       continue;
     }
-    const p = normalizePattern(item);
-    const err = validatePattern(p);
-    if (err) {
-      diagnostics.push(`${label}: ignored pattern ${JSON.stringify(item)} (${err})`);
+    const parsed = parseConfigPattern(item, key);
+    if ("error" in parsed) {
+      diagnostics.push(`${label}: ignored pattern ${JSON.stringify(item)} (${parsed.error})`);
       invalid++;
       continue;
     }
-    if (seen.has(p)) continue;
-    seen.add(p);
-    files.push(p);
+    if (seen.has(parsed.pattern)) continue;
+    seen.add(parsed.pattern);
+    patterns.push(parsed.pattern);
   }
-  if (raw.length === 0) return { files: [], diagnostics };
-  if (files.length === 0 && invalid > 0) {
-    diagnostics.push(`${label}: files had no valid patterns; falling back to a lower scope`);
+  if (raw.length === 0) return { patterns: [], diagnostics };
+  if (patterns.length === 0 && invalid > 0) {
+    diagnostics.push(`${label}: ${key} had no valid patterns; falling back to a lower scope`);
     return { diagnostics };
   }
-  return { files, diagnostics };
+  return { patterns, diagnostics };
 }
 
 export function parseContextObject(
@@ -148,9 +173,14 @@ export function parseContextObject(
     else diagnostics.push(`${label}: hideContents must be a boolean`);
   }
   if ("files" in o) {
-    const parsed = parseFilesValue(o.files, label);
+    const parsed = parsePatternValue(o.files, label, "files");
     diagnostics.push(...parsed.diagnostics);
-    if (parsed.files) value.files = parsed.files;
+    if (parsed.patterns) value.files = parsed.patterns;
+  }
+  if ("exclude" in o) {
+    const parsed = parsePatternValue(o.exclude, label, "exclude");
+    diagnostics.push(...parsed.diagnostics);
+    if (parsed.patterns) value.exclude = parsed.patterns;
   }
   return { value, diagnostics };
 }
@@ -185,8 +215,13 @@ function mergeScopes(
     workingDirOnly: "default",
     hideContents: "default",
     files: "default",
+    exclude: "default",
   } as Record<ConfigKey, Provenance>;
-  const effective: Config = { ...DEFAULT_CONFIG, files: [...DEFAULT_CONFIG.files] };
+  const effective: Config = {
+    ...DEFAULT_CONFIG,
+    files: [...DEFAULT_CONFIG.files],
+    exclude: [...DEFAULT_CONFIG.exclude],
+  };
 
   const apply = (src: Partial<Config>, scope: Provenance) => {
     if (src.workingDirOnly !== undefined) {
@@ -200,6 +235,10 @@ function mergeScopes(
     if (src.files !== undefined) {
       effective.files = [...src.files];
       provenance.files = scope;
+    }
+    if (src.exclude !== undefined) {
+      effective.exclude = [...src.exclude];
+      provenance.exclude = scope;
     }
   };
   apply(user, "user");
@@ -343,6 +382,9 @@ export function saveContextSettings(
       if (patch.files === null) delete ctx.files;
       else if (patch.files !== undefined) ctx.files = patch.files;
 
+      if (patch.exclude === null) delete ctx.exclude;
+      else if (patch.exclude !== undefined) ctx.exclude = patch.exclude;
+
       if (Object.keys(ctx).length === 0) delete settings.context;
       else settings.context = ctx;
 
@@ -360,6 +402,7 @@ export interface ScopeDraft {
   workingDirOnly: boolean;
   hideContents: boolean;
   files: string[];
+  exclude: string[];
 }
 
 export function filesEqual(a: string[], b: string[]): boolean {
@@ -387,6 +430,11 @@ export function buildSettingsPatch(
   } else if (initial.inherit.files || !filesEqual(initial.files, draft.files)) {
     patch.files = [...draft.files];
   }
+  if (draft.inherit.exclude) {
+    if (!initial.inherit.exclude) patch.exclude = null;
+  } else if (initial.inherit.exclude || !filesEqual(initial.exclude, draft.exclude)) {
+    patch.exclude = [...draft.exclude];
+  }
   return patch;
 }
 
@@ -394,34 +442,55 @@ export function patchIsEmpty(patch: ContextPatch): boolean {
   return (
     patch.workingDirOnly === undefined &&
     patch.hideContents === undefined &&
-    patch.files === undefined
+    patch.files === undefined &&
+    patch.exclude === undefined
   );
 }
 
 export function discoveryConfigChanged(a: Config, b: Config): boolean {
-  return a.workingDirOnly !== b.workingDirOnly || !filesEqual(a.files, b.files);
+  return (
+    a.workingDirOnly !== b.workingDirOnly ||
+    !filesEqual(a.files, b.files) ||
+    !filesEqual(a.exclude, b.exclude)
+  );
+}
+
+function parsePatternEditorText(
+  text: string,
+  key: PatternKey,
+): { patterns: string[]; errors: string[] } {
+  const patterns: string[] = [];
+  const errors: string[] = [];
+  const seen = new Set<string>();
+  for (const line of text.split(/\r?\n/)) {
+    const normalized = normalizePattern(line);
+    if (!normalized) continue;
+    const parsed = parseConfigPattern(line, key);
+    if ("error" in parsed) {
+      errors.push(`${normalized}: ${parsed.error}`);
+      continue;
+    }
+    if (seen.has(parsed.pattern)) continue;
+    seen.add(parsed.pattern);
+    patterns.push(parsed.pattern);
+  }
+  return { patterns, errors };
 }
 
 export function parseFilesEditorText(text: string): {
   files: string[];
   errors: string[];
 } {
-  const files: string[] = [];
-  const errors: string[] = [];
-  const seen = new Set<string>();
-  for (const line of text.split(/\r?\n/)) {
-    const p = normalizePattern(line);
-    if (!p) continue;
-    const err = validatePattern(p);
-    if (err) {
-      errors.push(`${p}: ${err}`);
-      continue;
-    }
-    if (seen.has(p)) continue;
-    seen.add(p);
-    files.push(p);
-  }
-  return { files, errors };
+  const parsed = parsePatternEditorText(text, "files");
+  return { files: parsed.patterns, errors: parsed.errors };
+}
+
+export function parseExcludeEditorText(text: string): {
+  exclude: string[];
+  errors: string[];
+} {
+  const parsed = parsePatternEditorText(text, "exclude");
+  return { exclude: parsed.patterns, errors: parsed.errors };
 }
 
 export function formatPatterns(files: string[]): string {

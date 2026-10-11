@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { resolve, dirname, join } from "node:path";
 import { tmpdir } from "node:os";
-import { mkdtemp, mkdir, writeFile, rm, symlink } from "node:fs/promises";
+import { mkdtemp, mkdir, writeFile, rm, symlink, unlink } from "node:fs/promises";
 import {
   buildContextBlock,
   dirForToolEvent,
@@ -113,6 +113,55 @@ describe("discoverContextFiles", () => {
       expect(braced.map((f) => f.path).sort()).toEqual(
         [join(root, "AGENTS.md"), join(root, "CLAUDE.md")].sort(),
       );
+    });
+  });
+
+  it("excludes reference subtrees even when touched directly or matched recursively", async () => {
+    await withTree(async (root) => {
+      const ref = join(root, "reference", "repo", "src");
+      const local = join(root, "pkg");
+      await mkdir(ref, { recursive: true });
+      await mkdir(local, { recursive: true });
+      for (const dir of [root, ref, local]) await writeFile(join(dir, "AGENTS.md"), "rules\n");
+      const opts = { workingDirOnly: true, launchDir: root, exclude: ["reference/**"] };
+      expect((await discoverContextFiles(ref, root, ["AGENTS.md"], opts)).map((f) => f.path))
+        .toEqual([join(root, "AGENTS.md")]);
+      expect((await discoverContextFiles(root, root, ["**/AGENTS.md"], opts)).map((f) => f.path).sort())
+        .toEqual([join(root, "AGENTS.md"), join(local, "AGENTS.md")].sort());
+      expect((await discoverContextFiles(ref, root, ["AGENTS.md"], { ...opts, exclude: ["reference"] })).map((f) => f.path))
+        .toEqual([join(root, "AGENTS.md")]);
+    });
+  });
+
+  it("matches dot paths, braces, file globs and symlink targets in exclusions", async () => {
+    await withTree(async (root) => {
+      await mkdir(join(root, ".reference"));
+      await mkdir(join(root, "vendor"));
+      await writeFile(join(root, "AGENTS.md"), "local\n");
+      await writeFile(join(root, "IGNORE.md"), "ignored\n");
+      await writeFile(join(root, "vendor", "rules.md"), "foreign\n");
+      await writeFile(join(root, ".reference", "AGENTS.md"), "foreign\n");
+      await symlink(join(root, "vendor", "rules.md"), join(root, "ALIAS.md"));
+      const files = await discoverContextFiles(root, root, ["*.md", ".reference/AGENTS.md"], {
+        workingDirOnly: true, launchDir: root,
+        exclude: ["{vendor,.reference}/**", "IGNORE*.md"],
+      });
+      expect(files.map((f) => f.path)).toEqual([join(root, "AGENTS.md")]);
+    });
+  });
+
+  it("rechecks a symlink target after it moves into an excluded tree", async () => {
+    await withTree(async (root) => {
+      await mkdir(join(root, "vendor"));
+      await writeFile(join(root, "local.md"), "local rules\n");
+      await writeFile(join(root, "vendor", "rules.md"), "foreign rules\n");
+      const alias = join(root, "AGENTS.md");
+      await symlink(join(root, "local.md"), alias);
+      const opts = { workingDirOnly: true, launchDir: root, exclude: ["vendor/**"] };
+      expect(await discoverContextFiles(root, root, ["AGENTS.md"], opts)).toHaveLength(1);
+      await unlink(alias);
+      await symlink(join(root, "vendor", "rules.md"), alias);
+      expect(await discoverContextFiles(root, root, ["AGENTS.md"], opts)).toEqual([]);
     });
   });
 

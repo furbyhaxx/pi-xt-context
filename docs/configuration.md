@@ -25,7 +25,8 @@ project cannot steer a user/global extension.
   "context": {
     "workingDirOnly": true,
     "hideContents": false,
-    "files": ["AGENTS.md"]
+    "files": ["AGENTS.md"],
+    "exclude": ["reference/**", "vendor/**"]
   }
 }
 ```
@@ -39,8 +40,10 @@ Unrelated Pi settings in the same file are left untouched. Unknown keys inside
 | `hideContents` | boolean | `false` | TUI keeps the compact `[context] loaded <workspace-relative paths>` line even when tool output is expanded. The LLM still receives full contents. |
 | `files` | string[] | `["AGENTS.md"]` | Glob patterns expanded at each walked directory. An empty array disables extension discovery. |
 
-Precedence is **defaults < user < trusted project**, per key. A `files` array
-**replaces** the inherited list; it is not concatenated.
+| `exclude` | string[] | `[]` | Launch-directory-relative globs for files or subtrees to skip. |
+
+Precedence is **defaults < user < trusted project**, per key. Each `files` or
+`exclude` array **replaces** its inherited list; it is not concatenated.
 
 Invalid values are ignored with a diagnostic and the lower valid scope is used.
 `/context` shows those warnings.
@@ -78,6 +81,34 @@ Unsupported (rejected at config load / editor save):
 `workingDirOnly` also applies to match paths after symlink resolution, so a
 link inside the project cannot pull in a file outside it.
 
+## Exclusions
+
+To keep a cloned reference repository's instructions out of automatic context:
+
+```json
+{
+  "context": {
+    "exclude": [".project/researches/_sources/**"]
+  }
+}
+```
+
+Unlike `files`, exclusions are relative to Pi's **launch directory**, so their
+meaning does not change when the model touches deeper directories. A directory
+match excludes its whole subtree: `reference`, `reference/`, and `reference/**`
+all exclude that tree. Use `**/reference/**` to exclude reference trees anywhere
+in the workspace, or `**/AGENTS.override.md` to exclude a filename anywhere.
+Dot directories, wildcards and brace globs are supported. Leading `!` negation,
+absolute paths and `..` segments are rejected.
+
+Exclusions apply to exact filenames, recursive include patterns, symlink targets,
+change notices and post-compaction re-injection. Touching an excluded tree can
+still load non-excluded parent instructions. They do not block manual reads or
+change Pi's own startup loader.
+
+Saving exclusions stops future automatic loading; text already in the session
+remains until it is compacted out or a new session is started.
+
 ## Slash command
 
 `/context` — overview (counts, dirs, effective settings, provenance).
@@ -94,7 +125,7 @@ Globs are edited one per line. Do not comma-split a line.
 A user-scope save that is still overridden by project settings is reported
 explicitly.
 
-Changing `files` or `workingDirOnly` clears the per-directory scan cache.
+Changing `files`, `exclude` or `workingDirOnly` clears the per-directory scan cache.
 Already injected files stay in the session (injection is durable). A **new
 session** is required to drop previously injected context. `hideContents` only
 affects TUI rendering.

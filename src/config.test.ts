@@ -6,7 +6,9 @@ import {
   buildSettingsPatch,
   DEFAULT_CONFIG,
   loadConfig,
+  parseExcludeEditorText,
   parseFilesEditorText,
+  discoveryConfigChanged,
   saveContextSettings,
   validatePattern,
   type ScopeDraft,
@@ -59,6 +61,24 @@ describe("parseFilesEditorText", () => {
   });
 });
 
+describe("parseExcludeEditorText", () => {
+  it("keeps globs and normalizes trailing directory slashes", () => {
+    const got = parseExcludeEditorText("vendor/\nreference/**\nvendor");
+    expect(got.errors).toEqual([]);
+    expect(got.exclude).toEqual(["vendor", "reference/**"]);
+  });
+
+  it("rejects negation, absolute paths, and parent escapes", () => {
+    const got = parseExcludeEditorText("!vendor/**\n/etc\n../secret\nreference/");
+    expect(got.exclude).toEqual(["reference"]);
+    expect(got.errors).toEqual([
+      "!vendor/**: negated patterns are not supported",
+      "/etc: absolute patterns are not supported",
+      "../secret: parent-escaping patterns are not supported",
+    ]);
+  });
+});
+
 describe("loadConfig", () => {
   it("defaults to workingDirOnly on, hideContents off, files AGENTS.md", async () => {
     await withDirs(async (_agent, cwd) => {
@@ -66,20 +86,30 @@ describe("loadConfig", () => {
     });
   });
 
-  it("merges user + trusted project; files arrays replace; untrusted skips project", async () => {
+  it("merges user + trusted project; arrays replace; untrusted skips project", async () => {
     await withDirs(async (agent, cwd) => {
       await writeFile(
         join(agent, "settings.json"),
         JSON.stringify({
           theme: "dark",
-          context: { workingDirOnly: true, hideContents: true, files: ["USER.md"] },
+          context: {
+            workingDirOnly: true,
+            hideContents: true,
+            files: ["USER.md"],
+            exclude: ["vendor/**"],
+          },
         }),
       );
       await mkdir(join(cwd, ".pi"), { recursive: true });
+      const projectPath = join(cwd, ".pi", "settings.json");
       await writeFile(
-        join(cwd, ".pi", "settings.json"),
+        projectPath,
         JSON.stringify({
-          context: { workingDirOnly: false, files: ["PROJECT.md"] },
+          context: {
+            workingDirOnly: false,
+            files: ["PROJECT.md"],
+            exclude: ["reference/**"],
+          },
         }),
       );
 
@@ -88,11 +118,13 @@ describe("loadConfig", () => {
         workingDirOnly: false,
         hideContents: true,
         files: ["PROJECT.md"],
+        exclude: ["reference/**"],
       });
       expect(trusted.provenance).toEqual({
         workingDirOnly: "project",
         hideContents: "user",
         files: "project",
+        exclude: "project",
       });
 
       const untrusted = loadConfig(cwd, false);
@@ -100,19 +132,31 @@ describe("loadConfig", () => {
         workingDirOnly: true,
         hideContents: true,
         files: ["USER.md"],
+        exclude: ["vendor/**"],
       });
       expect(untrusted.project).toEqual({});
+
+      await writeFile(projectPath, JSON.stringify({ context: { exclude: [] } }));
+      expect(loadConfig(cwd, true).effective.exclude).toEqual([]);
+      expect(loadConfig(cwd, true).provenance.exclude).toBe("project");
+
+      await writeFile(projectPath, JSON.stringify({ context: {} }));
+      expect(loadConfig(cwd, true).effective.exclude).toEqual(["vendor/**"]);
+      expect(loadConfig(cwd, true).provenance.exclude).toBe("user");
     });
   });
 
-  it("explicit empty files disables discovery", async () => {
+  it("accepts explicit empty arrays and normalizes excluded directories", async () => {
     await withDirs(async (agent, cwd) => {
       await writeFile(
         join(agent, "settings.json"),
-        JSON.stringify({ context: { files: [] } }),
+        JSON.stringify({ context: { files: [], exclude: ["vendor/"] } }),
       );
-      expect(loadConfig(cwd, false).effective.files).toEqual([]);
-      expect(loadConfig(cwd, false).provenance.files).toBe("user");
+      const loaded = loadConfig(cwd, false);
+      expect(loaded.effective.files).toEqual([]);
+      expect(loaded.provenance.files).toBe("user");
+      expect(loaded.effective.exclude).toEqual(["vendor"]);
+      expect(loaded.provenance.exclude).toBe("user");
     });
   });
 
@@ -142,6 +186,22 @@ describe("loadConfig", () => {
       expect(mixed.effective.workingDirOnly).toBe(true);
       expect(mixed.effective.hideContents).toBe(false);
       expect(mixed.effective.files).toEqual(["AGENTS.md"]);
+
+      await writeFile(
+        join(agent, "settings.json"),
+        JSON.stringify({ context: { exclude: ["!vendor/**", "/etc", "../secret", 1] } }),
+      );
+      const invalidExclude = loadConfig(cwd, false);
+      expect(invalidExclude.effective.exclude).toEqual([]);
+      expect(invalidExclude.diagnostics).toEqual(
+        expect.arrayContaining([
+          expect.stringContaining("negated patterns are not supported"),
+          expect.stringContaining("absolute patterns are not supported"),
+          expect.stringContaining("parent-escaping patterns are not supported"),
+          expect.stringContaining("exclude entries must be strings"),
+          expect.stringContaining("exclude had no valid patterns"),
+        ]),
+      );
     });
   });
 });
@@ -156,6 +216,7 @@ describe("saveContextSettings", () => {
       const result = saveContextSettings("user", cwd, {
         hideContents: true,
         files: ["AGENTS.md", ".pi/context/*.md"],
+        exclude: ["reference/**"],
       });
       expect(result).toEqual({ ok: true });
       const raw = JSON.parse(await readFile(join(agent, "settings.json"), "utf-8"));
@@ -165,6 +226,7 @@ describe("saveContextSettings", () => {
         workingDirOnly: true,
         hideContents: true,
         files: ["AGENTS.md", ".pi/context/*.md"],
+        exclude: ["reference/**"],
       });
     });
   });
@@ -173,9 +235,9 @@ describe("saveContextSettings", () => {
     await withDirs(async (agent, cwd) => {
       await writeFile(
         join(agent, "settings.json"),
-        JSON.stringify({ context: { workingDirOnly: false, hideContents: true } }),
+        JSON.stringify({ context: { workingDirOnly: false, hideContents: true, exclude: ["vendor/**"] } }),
       );
-      expect(saveContextSettings("user", cwd, { workingDirOnly: null })).toEqual({ ok: true });
+      expect(saveContextSettings("user", cwd, { workingDirOnly: null, exclude: null })).toEqual({ ok: true });
       const raw = JSON.parse(await readFile(join(agent, "settings.json"), "utf-8"));
       expect(raw.context).toEqual({ hideContents: true });
     });
@@ -183,9 +245,9 @@ describe("saveContextSettings", () => {
 
   it("creates missing settings files and project .pi dirs", async () => {
     await withDirs(async (_agent, cwd) => {
-      expect(saveContextSettings("project", cwd, { files: ["X.md"] })).toEqual({ ok: true });
+      expect(saveContextSettings("project", cwd, { exclude: ["X/**"] })).toEqual({ ok: true });
       const raw = JSON.parse(await readFile(join(cwd, ".pi", "settings.json"), "utf-8"));
-      expect(raw).toEqual({ context: { files: ["X.md"] } });
+      expect(raw).toEqual({ context: { exclude: ["X/**"] } });
     });
   });
 
@@ -202,10 +264,17 @@ describe("saveContextSettings", () => {
 
 describe("buildSettingsPatch", () => {
   const base = (over: Partial<ScopeDraft> = {}): ScopeDraft => ({
-    inherit: { workingDirOnly: true, hideContents: true, files: true, ...over.inherit },
+    inherit: {
+      workingDirOnly: true,
+      hideContents: true,
+      files: true,
+      exclude: true,
+      ...over.inherit,
+    },
     workingDirOnly: true,
     hideContents: false,
     files: ["AGENTS.md"],
+    exclude: [],
     ...over,
   });
 
@@ -216,24 +285,41 @@ describe("buildSettingsPatch", () => {
   it("sets overrides and can reset them to inherit", () => {
     const initial = base();
     const draft = base({
-      inherit: { workingDirOnly: false, hideContents: true, files: false },
+      inherit: { workingDirOnly: false, hideContents: true, files: false, exclude: false },
       workingDirOnly: false,
       files: [],
+      exclude: ["vendor/**"],
     });
     expect(buildSettingsPatch(initial, draft)).toEqual({
       workingDirOnly: false,
       files: [],
+      exclude: ["vendor/**"],
     });
 
+    expect(buildSettingsPatch(initial, base({
+      inherit: { workingDirOnly: true, hideContents: true, files: true, exclude: false },
+      exclude: [],
+    }))).toEqual({ exclude: [] });
+
     const after = base({
-      inherit: { workingDirOnly: false, hideContents: true, files: false },
+      inherit: { workingDirOnly: false, hideContents: true, files: false, exclude: false },
       workingDirOnly: false,
       files: [],
+      exclude: ["vendor/**"],
     });
     const reset = base();
     expect(buildSettingsPatch(after, reset)).toEqual({
       workingDirOnly: null,
       files: null,
+      exclude: null,
     });
+  });
+
+  it("invalidates discovery cache when exclusions change", () => {
+    expect(discoveryConfigChanged(DEFAULT_CONFIG, {
+      ...DEFAULT_CONFIG,
+      exclude: ["reference/**"],
+    })).toBe(true);
+    expect(discoveryConfigChanged(DEFAULT_CONFIG, DEFAULT_CONFIG)).toBe(false);
   });
 });

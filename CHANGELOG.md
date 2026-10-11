@@ -4,8 +4,23 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- `context.exclude` accepts launch-directory-relative file and subtree globs,
+  with staged editing in `/context config`. Exclusions apply to direct touches,
+  recursive patterns, symlink targets, notices and compaction re-injection.
+
 ### Fixed
 
+- Keep context tracking and configuration inside each extension instance so
+  in-process subagents cannot reset their parent's deduplication state.
+- Serialize concurrent scans and retain queued injections until they are seen
+  in context, preventing duplicate copies of shared ancestor files.
+- Acknowledge each notified revision once and restore the latest revision on
+  reload; timestamp-only changes no longer emit empty notices.
+- Full reads with `null` pagination are recognized as already loaded.
+- Switching file or exclusion patterns from inherit to override immediately
+  enables their editor.
 - Load `proper-lockfile` through a normal import rather than `createRequire`, so
   compiled Pi-Bolt 0.7.0 can resolve its `graceful-fs` dependency. Settings locking
   is unchanged. Added settings-lock tests and an opt-in real-Bolt startup test

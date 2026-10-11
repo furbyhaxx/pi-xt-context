@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { mkdtemp, writeFile, rm } from "node:fs/promises";
 import piXtContext, { applyLoadedConfig, restoreLoadedFromContext, type State } from "./index.ts";
 import { DEFAULT_CONFIG, loadConfig } from "./src/config.ts";
+import { collectExtensionFilesFromBranch } from "./src/loaded.ts";
 
 describe("extension factory", () => {
   it("restores injected files, lists uniquely, and clears scan cache on discovery change", async () => {
@@ -62,7 +63,7 @@ describe("extension factory", () => {
       );
       const next = loadConfig(cwd, true);
       expect(next.effective.files).toEqual(["CLAUDE.md"]);
-      applyLoadedConfig(next, true);
+
       expect(next.effective).not.toEqual(DEFAULT_CONFIG);
     } finally {
       if (prev === undefined) delete process.env.PI_CODING_AGENT_DIR;
@@ -153,6 +154,27 @@ describe("restoreLoadedFromContext", () => {
     expect(s.tracked.has("stale")).toBe(false);
     expect([...s.tracked.values()].map((f) => f.path)).toEqual(["/proj/app/AGENTS.md"]);
     expect(s.tracked.size).toBe(1);
+    s.dirContexts.set("/proj/app", { dir: "/proj/app", files: ["/proj/app/AGENTS.md"], turn: 0 });
+    applyLoadedConfig(s, true);
+    expect(s.dirContexts.size).toBe(0);
+    expect(s.scanGeneration).toBe(1);
+    expect(s.tracked.size).toBe(1);
+  });
+
+  it("keeps the latest injected or notified revision on restore", () => {
+    const meta = (mtimeMs: number) => ({ path: "/proj/AGENTS.md", scopeDir: "/proj", mtimeMs, size: 11 });
+    const injected = (mtimeMs: number) => ({
+      type: "custom_message",
+      customType: "context",
+      details: { files: ["/proj/AGENTS.md"], context: "rules", meta: [meta(mtimeMs)] },
+    });
+    const files = collectExtensionFilesFromBranch([
+      injected(1),
+      injected(2),
+      { type: "custom_message", customType: "context-changed", details: { file: "/proj/AGENTS.md", text: "diff", meta: meta(3) } },
+    ]);
+    expect(files).toHaveLength(1);
+    expect(files[0].stamp).toEqual({ mtimeMs: 3, size: 11 });
   });
 
   it("keeps the stamp of an injected copy so a restored session can diff a change", () => {

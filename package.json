@@ -14,6 +14,7 @@
     "bench": "node bench/make-tree.mjs /tmp/pxt-bench 300 && PI_CODING_AGENT_DIR=/tmp/pxt-bench mkdir -p /tmp/pxt-bench-agent && PI_CODING_AGENT_DIR=/tmp/pxt-bench-agent strace -f -qq -o /tmp/pxt-bench.trace node --experimental-transform-types --import ./bench/alias.mjs bench/dedup.mjs /tmp/pxt-bench"
   },
   "dependencies": {
+    "picomatch": "^4.0.7",
     "proper-lockfile": "^4.1.2",
     "tinyglobby": "^0.2.14"
   },

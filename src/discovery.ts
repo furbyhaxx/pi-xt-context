@@ -1,6 +1,8 @@
+import { realpathSync } from "node:fs";
 import { stat } from "node:fs/promises";
-import { dirname, isAbsolute, join, resolve } from "node:path";
-import { glob } from "tinyglobby";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import picomatch from "picomatch";
+import { convertPathToPattern, glob } from "tinyglobby";
 import { readContextFile, type FileStamp } from "./content.ts";
 import { fromBashPath, isContainedIn, pathKey } from "./paths.ts";
 
@@ -29,6 +31,42 @@ export interface DirState {
 export interface DiscoverOptions {
   workingDirOnly: boolean;
   launchDir: string;
+  exclude?: string[];
+}
+
+/** Match launch-relative exclusions against paths and their symlink targets. */
+export function createExclusionMatcher(
+  launchDir: string,
+  patterns: string[],
+): (path: string) => boolean {
+  if (patterns.length === 0) return () => false;
+  const base = resolve(fromBashPath(launchDir));
+  const resolved = (path: string): string => {
+    try {
+      return realpathSync(path);
+    } catch {
+      return path;
+    }
+  };
+  const realBase = resolved(base);
+  const matches = picomatch(patterns, {
+    dot: true,
+    nocase: process.platform === "win32",
+    nonegate: true,
+  });
+  const excluded = (path: string, root: string): boolean => {
+    const rel = pathKey(relative(root, path));
+    if (rel === ".." || rel.startsWith("../") || isAbsolute(rel)) return false;
+    const segments = rel.split("/");
+    for (let i = segments.length; i > 0; i--) {
+      if (matches(segments.slice(0, i).join("/") || ".")) return true;
+    }
+    return false;
+  };
+  return (path) => {
+    const abs = resolve(fromBashPath(path));
+    return excluded(abs, base) || excluded(resolved(abs), realBase);
+  };
 }
 
 export function hasGlobMagic(pattern: string): boolean {
@@ -82,7 +120,7 @@ async function isRegularFile(p: string): Promise<boolean> {
   }
 }
 
-async function matchPattern(dir: string, pattern: string): Promise<string[]> {
+async function matchPattern(dir: string, pattern: string, ignore: string[]): Promise<string[]> {
   if (!hasGlobMagic(pattern)) {
     const segs = pattern.split("/").filter((s) => s.length > 0 && s !== ".");
     const filePath = segs.length === 0 ? dir : join(dir, ...segs);
@@ -101,7 +139,7 @@ async function matchPattern(dir: string, pattern: string): Promise<string[]> {
       braceExpansion: true,
       // `**` patterns would otherwise descend into dependency and VCS trees on
       // every ancestor of every touched directory; nothing there is project context.
-      ignore: ["**/node_modules/**", "**/.git/**"],
+      ignore: ["**/node_modules/**", "**/.git/**", ...ignore],
     });
   } catch (err) {
     console.error(`pi-xt-context: glob ${JSON.stringify(pattern)} in ${dir}: ${err}`);
@@ -129,6 +167,9 @@ export async function discoverContextFiles(
   rootDir = fromBashPath(rootDir);
   ceiling = fromBashPath(ceiling);
   const launchDir = fromBashPath(opts.launchDir);
+  const exclude = opts.exclude ?? [];
+  const isExcluded = createExclusionMatcher(launchDir, exclude);
+  const ignore = exclude.map((p) => `${convertPathToPattern(resolve(launchDir))}/${p}`);
   let dir = isAbsolute(rootDir) ? rootDir : resolve(process.cwd(), rootDir);
   const stopAt = isAbsolute(ceiling) ? ceiling : resolve(process.cwd(), ceiling);
 
@@ -137,8 +178,8 @@ export async function discoverContextFiles(
 
     const matches: string[] = [];
     const seen = new Set<string>();
-    for (const pattern of patterns) {
-      for (const m of await matchPattern(dir, pattern)) {
+    for (const pattern of isExcluded(dir) ? [] : patterns) {
+      for (const m of await matchPattern(dir, pattern, ignore)) {
         const key = pathKey(m);
         if (seen.has(key)) continue;
         seen.add(key);
@@ -149,7 +190,7 @@ export async function discoverContextFiles(
 
     for (const filePath of matches) {
       const key = pathKey(filePath);
-      if (found.has(key)) continue;
+      if (found.has(key) || isExcluded(filePath)) continue;
       if (opts.workingDirOnly && !isContainedIn(filePath, launchDir)) continue;
       const text = await readContextFile(filePath);
       if (!text) continue;

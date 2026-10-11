@@ -15,6 +15,7 @@ import {
   discoveryConfigChanged,
   formatPatterns,
   loadConfig,
+  parseExcludeEditorText,
   parseFilesEditorText,
   patchIsEmpty,
   projectSettingsPath,
@@ -68,6 +69,7 @@ export function formatOverview(opts: {
     `workingDirOnly: ${e.workingDirOnly ? "on" : "off"}  (${config.provenance.workingDirOnly})`,
     `hideContents: ${e.hideContents ? "on" : "off"}  (${config.provenance.hideContents})`,
     `files: ${formatPatterns(e.files)}  (${config.provenance.files})`,
+    `exclude: ${formatPatterns(e.exclude)}  (${config.provenance.exclude})`,
   ];
   if (e.files.length === 0) {
     lines.push("discovery: disabled (empty files list)");
@@ -131,17 +133,52 @@ function draftFromScope(loaded: LoadedConfig, scope: "user" | "project"): ScopeD
       workingDirOnly: scoped.workingDirOnly === undefined,
       hideContents: scoped.hideContents === undefined,
       files: scoped.files === undefined,
+      exclude: scoped.exclude === undefined,
     },
     workingDirOnly: scoped.workingDirOnly ?? loaded.effective.workingDirOnly,
     hideContents: scoped.hideContents ?? loaded.effective.hideContents,
     files: [...(scoped.files ?? loaded.effective.files)],
+    exclude: [...(scoped.exclude ?? loaded.effective.exclude)],
   };
 }
 
-type ConfigAction = "save" | "cancel" | "edit-files";
+type ConfigAction = "save" | "cancel" | "edit-files" | "edit-exclude";
 
 function boolValue(inherit: boolean, value: boolean): string {
   return inherit ? "inherit" : value ? "on" : "off";
+}
+
+function patternRows(
+  key: "files" | "exclude",
+  inherit: boolean,
+  patterns: string[],
+  effective: string[],
+): SettingItem[] {
+  return [
+    {
+      id: `${key}Source`,
+      label: key,
+      currentValue: inherit ? "inherit" : "override",
+      values: ["inherit", "override"],
+      description: inherit
+        ? `inherited ${formatPatterns(effective)}`
+        : patterns.length === 0
+          ? key === "files"
+            ? "explicitly empty — discovery disabled"
+            : "explicitly empty — no exclusions"
+          : formatPatterns(patterns),
+    },
+    {
+      id: `${key}Edit`,
+      label: `edit ${key}`,
+      currentValue: inherit ? "(inherited)" : formatPatterns(patterns),
+      values: inherit ? undefined : ["edit"],
+      description:
+        key === "files"
+          ? "One glob per line. Brace globs may contain commas."
+          : "Launch-relative globs, one per line. Trailing / is optional.",
+    },
+  ];
 }
 
 async function runConfigurator(
@@ -179,6 +216,7 @@ async function runConfigurator(
     workingDirOnly: initial.workingDirOnly,
     hideContents: initial.hideContents,
     files: [...initial.files],
+    exclude: [...initial.exclude],
   };
   const dest = scope === "user" ? userPath : projectPath;
 
@@ -210,26 +248,18 @@ async function runConfigurator(
             values: ["on", "off", "inherit"],
             description: `effective ${loaded.effective.hideContents ? "on" : "off"} (${loaded.provenance.hideContents})`,
           },
-          {
-            id: "filesSource",
-            label: "files",
-            currentValue: draft.inherit.files ? "inherit" : "override",
-            values: ["inherit", "override"],
-            description: draft.inherit.files
-              ? `inherited ${formatPatterns(loaded.effective.files)}`
-              : draft.files.length === 0
-                ? "explicitly empty — discovery disabled"
-                : formatPatterns(draft.files),
-          },
-          {
-            id: "filesEdit",
-            label: "edit files",
-            currentValue: draft.inherit.files
-              ? "(inherited)"
-              : formatPatterns(draft.files),
-            values: draft.inherit.files ? undefined : ["edit"],
-            description: "One glob per line. Brace globs may contain commas.",
-          },
+          ...patternRows(
+            "files",
+            draft.inherit.files,
+            draft.files,
+            loaded.effective.files,
+          ),
+          ...patternRows(
+            "exclude",
+            draft.inherit.exclude,
+            draft.exclude,
+            loaded.effective.exclude,
+          ),
           {
             id: "save",
             label: "Save",
@@ -262,14 +292,22 @@ async function runConfigurator(
                 draft.inherit.hideContents = false;
                 draft.hideContents = newValue === "on";
               }
-            } else if (id === "filesSource") {
-              if (newValue === "inherit") draft.inherit.files = true;
+            } else if (id === "filesSource" || id === "excludeSource") {
+              const key = id === "filesSource" ? "files" : "exclude";
+              if (newValue === "inherit") draft.inherit[key] = true;
               else {
-                if (draft.inherit.files) draft.files = [...loaded.effective.files];
-                draft.inherit.files = false;
+                if (draft.inherit[key]) draft[key] = [...loaded.effective[key]];
+                draft.inherit[key] = false;
               }
-            } else if (id === "filesEdit" && newValue === "edit") {
-              done("edit-files");
+              for (const updated of patternRows(key, draft.inherit[key], draft[key], loaded.effective[key])) {
+                const item = items.find((item) => item.id === updated.id);
+                if (item) Object.assign(item, updated);
+              }
+            } else if (
+              (id === "filesEdit" || id === "excludeEdit") &&
+              newValue === "edit"
+            ) {
+              done(id === "filesEdit" ? "edit-files" : "edit-exclude");
               return;
             } else if (id === "save") {
               done("save");
@@ -295,18 +333,21 @@ async function runConfigurator(
       },
     );
 
-    if (action === "edit-files") {
-      const text = await ctx.ui.editor(
-        "Context file patterns (one glob per line)",
-        draft.files.join("\n"),
-      );
+    if (action === "edit-files" || action === "edit-exclude") {
+      const key = action === "edit-files" ? "files" : "exclude";
+      const title = key === "files"
+        ? "Context file patterns (one glob per line)"
+        : "Context exclusion patterns (one launch-relative glob per line)";
+      const text = await ctx.ui.editor(title, draft[key].join("\n"));
       if (text !== undefined) {
-        const parsed = parseFilesEditorText(text);
+        const parsed = key === "files"
+          ? parseFilesEditorText(text)
+          : parseExcludeEditorText(text);
         if (parsed.errors.length > 0) {
           ctx.ui.notify(parsed.errors.join("\n"), "error");
         } else {
-          draft.files = parsed.files;
-          draft.inherit.files = false;
+          draft[key] = [...("files" in parsed ? parsed.files : parsed.exclude)];
+          draft.inherit[key] = false;
         }
       }
       continue;
@@ -344,6 +385,10 @@ async function runConfigurator(
       if (patch.files !== undefined && patch.files !== null
         && next.provenance.files === "project") {
         masked.push("files");
+      }
+      if (patch.exclude !== undefined && patch.exclude !== null
+        && next.provenance.exclude === "project") {
+        masked.push("exclude");
       }
     }
 

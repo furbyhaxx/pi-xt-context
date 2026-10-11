@@ -28,11 +28,7 @@ import type {
 import { Text } from "@earendil-works/pi-tui";
 import { isAbsolute, resolve } from "node:path";
 import { registerContextCommand, type ContextCommandHost } from "./src/commands.ts";
-import {
-  DEFAULT_CONFIG,
-  loadConfig,
-  type LoadedConfig,
-} from "./src/config.ts";
+import { loadConfig } from "./src/config.ts";
 import {
   heldText,
   readContextFile,
@@ -45,6 +41,7 @@ import { decide } from "./src/decide.ts";
 import { formatChangeNotice } from "./src/diff.ts";
 import {
   buildContextBlock,
+  createExclusionMatcher,
   dirForToolEvent,
   discoverContextFiles,
   resolveCdDir,
@@ -125,7 +122,7 @@ export interface State {
   tracked: Map<string, TrackedFile>;
   /** Tracked files whose injected text is still in the model's context. */
   live: Set<string>;
-  /** Injected since the last `context` event; treated as live until observed. */
+  /** Queued injections, treated as live until a `context` event observes them. */
   pending: Set<string>;
   liveKnown: boolean;
   inFlight: Set<string>;
@@ -133,25 +130,6 @@ export interface State {
   scanGeneration: number;
   turn: number;
 }
-
-function emptyLoaded(): LoadedConfig {
-  return {
-    effective: { ...DEFAULT_CONFIG, files: [...DEFAULT_CONFIG.files] },
-    user: {},
-    project: {},
-    provenance: {
-      workingDirOnly: "default",
-      hideContents: "default",
-      files: "default",
-    },
-    diagnostics: [],
-    userPath: "",
-    projectPath: "",
-  };
-}
-
-let state: State | null = null;
-let config: LoadedConfig = emptyLoaded();
 
 function initState(cwd: string): State {
   return {
@@ -184,10 +162,9 @@ export function restoreLoadedFromContext(s: State, ctx: ExtensionContext): void 
 }
 
 export function applyLoadedConfig(
-  next: LoadedConfig,
+  state: State | null,
   discoveryChanged: boolean,
 ): void {
-  config = next;
   if (!discoveryChanged || !state) return;
   state.dirContexts.clear();
   state.scanGeneration += 1;
@@ -205,10 +182,6 @@ function seedPiLoaded(
 
 function isLive(s: State, key: string): boolean {
   return s.live.has(key) || s.pending.has(key);
-}
-
-function inScope(s: State, scopeDir: string): boolean {
-  return !config.effective.workingDirOnly || isContainedIn(scopeDir, s.launchDir);
 }
 
 /**
@@ -232,7 +205,7 @@ function changedSince(tracked: TrackedFile, stamp: FileStamp): boolean {
 function noteAgentRead(s: State, event: ToolResultEvent): void {
   if (event.toolName !== "read" || event.parentToolCallId) return;
   const input = event.input;
-  if (input.offset !== undefined || input.limit !== undefined) return;
+  if (input.offset != null || input.limit != null) return;
   const raw = input.path ?? input.file_path;
   if (typeof raw !== "string" || raw.length === 0) return;
   const abs = isAbsolute(raw) ? raw : resolve(s.launchDir, raw);
@@ -279,13 +252,23 @@ async function sendBlock(
 async function sendNotice(
   pi: ExtensionAPI,
   s: State,
-  path: string,
+  tracked: TrackedFile,
   previous: string | null,
   current: ContextText,
 ): Promise<void> {
+  if (previous === current.content) {
+    tracked.stamp = current.stamp;
+    return;
+  }
+  const path = tracked.path;
   const details: ChangeDetails = {
     file: path,
     text: formatChangeNotice(path, { path, previous, current }),
+    meta: {
+      path,
+      scopeDir: tracked.scopeDir,
+      ...current.stamp,
+    },
   };
   await pi.sendMessage(
     {
@@ -296,11 +279,24 @@ async function sendNotice(
     },
     { deliverAs: "steer" },
   );
+  tracked.stamp = current.stamp;
 }
 
 export default function piXtContext(pi: ExtensionAPI) {
-  state = initState(process.cwd());
-  config = loadConfig(process.cwd(), false);
+  let state: State | null = initState(process.cwd());
+  let config = loadConfig(process.cwd(), false);
+
+  const inScope = (s: State, file: TrackedFile): boolean =>
+    (!config.effective.workingDirOnly || isContainedIn(file.scopeDir, s.launchDir)) &&
+    !createExclusionMatcher(s.launchDir, config.effective.exclude)(file.path);
+
+  const queues = new WeakMap<State, Promise<void>>();
+  const enqueueScan = (s: State, scan: () => Promise<void>): Promise<void> => {
+    const work = (queues.get(s) ?? Promise.resolve()).then(scan);
+    // Keep subsequent scans usable after a failure; the caller still receives it.
+    queues.set(s, work.catch(() => {}));
+    return work;
+  };
 
   const renderContextMessage = (
     message: {
@@ -370,7 +366,7 @@ export default function piXtContext(pi: ExtensionAPI) {
     });
     if (state) {
       state.live = liveKeys(event.messages);
-      state.pending.clear();
+      for (const key of state.live) state.pending.delete(key);
       state.liveKnown = true;
     }
     if (changed) return { messages };
@@ -385,6 +381,7 @@ export default function piXtContext(pi: ExtensionAPI) {
     const files = await discoverContextFiles(dir, s.launchDir, config.effective.files, {
       workingDirOnly: config.effective.workingDirOnly,
       launchDir: s.launchDir,
+      exclude: config.effective.exclude,
     });
     if (state !== s || s.scanGeneration !== generation) return;
 
@@ -419,7 +416,7 @@ export default function piXtContext(pi: ExtensionAPI) {
       } else if (action === "notice" && tracked) {
         const previous = heldText(file.path, tracked.stamp);
         try {
-          await sendNotice(pi, s, file.path, previous, {
+          await sendNotice(pi, s, tracked, previous, {
             path: file.path,
             content: file.content,
             stamp: file.stamp,
@@ -449,7 +446,7 @@ export default function piXtContext(pi: ExtensionAPI) {
   ): Promise<void> => {
     for (const key of record.files) {
       const tracked = s.tracked.get(key);
-      if (!tracked) continue;
+      if (!tracked || !inScope(s, tracked)) continue;
       const previous = heldText(tracked.path, tracked.stamp);
       const current = await readContextFile(tracked.path);
       if (state !== s || s.scanGeneration !== generation) return;
@@ -464,7 +461,7 @@ export default function piXtContext(pi: ExtensionAPI) {
       });
       if (action === "notice") {
         try {
-          await sendNotice(pi, s, current.path, previous, current);
+          await sendNotice(pi, s, tracked, previous, current);
         } catch (err) {
           console.error(`pi-xt-context: failed to report change of ${current.path}: ${err}`);
         }
@@ -491,7 +488,8 @@ export default function piXtContext(pi: ExtensionAPI) {
     let targetDir: string | null = null;
 
     if (event.toolName === "bash") {
-      const command = event.input?.command ?? "";
+      const rawCommand = event.input?.command;
+      const command = typeof rawCommand === "string" ? rawCommand : "";
       const rawOutput = (event.content ?? [])
         .filter((c) => c.type === "text")
         .map((c) => c.text)
@@ -515,18 +513,15 @@ export default function piXtContext(pi: ExtensionAPI) {
       return;
     }
 
-    const dirKey = pathKey(dir);
-    const known = s.dirContexts.get(dirKey);
-    if (s.inFlight.has(dirKey) || (known && known.turn === s.turn)) return;
-
     const generation = s.scanGeneration;
-    s.inFlight.add(dirKey);
-    try {
+    await enqueueScan(s, async () => {
+      if (state !== s || s.scanGeneration !== generation) return;
+      const dirKey = pathKey(dir);
+      const known = s.dirContexts.get(dirKey);
+      if (known && known.turn === s.turn) return;
       if (known) await recheckDir(s, known, generation);
       else await discoverDir(s, dir, dirKey, generation);
-    } finally {
-      s.inFlight.delete(dirKey);
-    }
+    });
   });
 
   pi.on("turn_start", (event) => {
@@ -539,37 +534,47 @@ export default function piXtContext(pi: ExtensionAPI) {
   pi.on("session_compact", async (_event, ctx) => {
     if (!state) return;
     const s = state;
-    s.live = liveKeys(ctx.sessionManager.buildSessionProjection().messages);
-    s.pending.clear();
-    s.liveKnown = true;
+    const generation = s.scanGeneration;
+    await enqueueScan(s, async () => {
+      if (state !== s || s.scanGeneration !== generation) return;
+      s.live = liveKeys(ctx.sessionManager.buildSessionProjection().messages);
+      for (const key of s.live) s.pending.delete(key);
+      s.liveKnown = true;
 
-    const hidden = [...s.tracked.values()].filter(
-      (t) =>
-        !s.live.has(t.key) &&
-        !s.piLoadedPaths.has(t.key) &&
-        !s.agentRead.has(t.key) &&
-        inScope(s, t.scopeDir),
-    );
-    if (hidden.length === 0) return;
+      const hidden = [...s.tracked.values()].filter(
+        (t) =>
+          inScope(s, t) &&
+          decide({
+            piLoaded: s.piLoadedPaths.has(t.key),
+            agentRead: s.agentRead.has(t.key),
+            injected: true,
+            live: isLive(s, t.key),
+            liveKnown: s.liveKnown,
+            changed: false,
+          }) === "inject",
+      );
+      if (hidden.length === 0) return;
 
-    const files: ContextFile[] = [];
-    for (const t of hidden) {
-      if (state !== s) return;
-      const text = await readContextFile(t.path);
-      if (!text) continue;
-      files.push({
-        path: text.path,
-        content: text.content,
-        stamp: text.stamp,
-        scopeDir: t.scopeDir,
-      });
-    }
-    if (files.length === 0) return;
-    try {
-      await sendBlock(pi, s, files);
-    } catch (err) {
-      console.error(`pi-xt-context: failed to re-inject after compaction: ${err}`);
-    }
+      const files: ContextFile[] = [];
+      for (const t of hidden) {
+        if (state !== s || s.scanGeneration !== generation) return;
+        const text = await readContextFile(t.path);
+        if (state !== s || s.scanGeneration !== generation) return;
+        if (!text) continue;
+        files.push({
+          path: text.path,
+          content: text.content,
+          stamp: text.stamp,
+          scopeDir: t.scopeDir,
+        });
+      }
+      if (files.length === 0) return;
+      try {
+        await sendBlock(pi, s, files);
+      } catch (err) {
+        console.error(`pi-xt-context: failed to re-inject after compaction: ${err}`);
+      }
+    });
   });
 
   pi.on("before_agent_start", (event) => {
@@ -596,7 +601,10 @@ export default function piXtContext(pi: ExtensionAPI) {
           }
         : null,
     getConfig: () => config,
-    setConfig: applyLoadedConfig,
+    setConfig: (next, changed) => {
+      config = next;
+      applyLoadedConfig(state, changed);
+    },
   };
   registerContextCommand(pi, host);
 

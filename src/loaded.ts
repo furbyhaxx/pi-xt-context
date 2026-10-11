@@ -28,6 +28,8 @@ export interface InjectedFileMeta {
 export interface ChangeDetails {
   file: string;
   text: string;
+  /** Latest revision acknowledged by this notice, for session restoration. */
+  meta?: InjectedFileMeta;
 }
 
 export interface ExtensionLoadedFile {
@@ -48,9 +50,18 @@ export function collectExtensionFilesFromBranch(
   entries: Iterable<BranchEntryLike>,
 ): ExtensionLoadedFile[] {
   const out: ExtensionLoadedFile[] = [];
-  const seen = new Set<string>();
+  const positions = new Map<string, number>();
   for (const entry of entries) {
     if (entry?.type !== "custom_message") continue;
+    if (entry.customType === CHANGED_TYPE) {
+      const details = entry.details as ChangeDetails | undefined;
+      const meta = details?.meta;
+      const index = details?.file ? positions.get(fileDedupKey(details.file)) : undefined;
+      if (index !== undefined && meta) {
+        out[index].stamp = { mtimeMs: meta.mtimeMs, size: meta.size };
+      }
+      continue;
+    }
     if (entry.customType !== CUSTOM_TYPE && entry.customType !== LEGACY_CUSTOM_TYPE) continue;
     const details = entry.details as ContextDetails | undefined;
     const files = details?.files;
@@ -61,10 +72,9 @@ export function collectExtensionFilesFromBranch(
     for (const p of files) {
       if (typeof p !== "string" || p.length === 0) continue;
       const key = fileDedupKey(p);
-      if (seen.has(key)) continue;
-      seen.add(key);
       const m = meta.get(p);
-      out.push({
+      const index = positions.get(key);
+      const file = {
         path: p,
         key,
         scopeDir: m?.scopeDir ?? dirname(p),
@@ -72,7 +82,13 @@ export function collectExtensionFilesFromBranch(
           m === undefined
             ? { ...UNKNOWN_STAMP }
             : { mtimeMs: m.mtimeMs, size: m.size },
-      });
+      };
+      if (index === undefined) {
+        positions.set(key, out.length);
+        out.push(file);
+      } else {
+        out[index] = file;
+      }
     }
   }
   return out;

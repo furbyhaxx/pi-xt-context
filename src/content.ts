@@ -70,8 +70,7 @@ export async function readContextFile(path: string): Promise<ContextText | null>
   if (content.trim().length === 0) return null;
 
   if (memo.size >= MEMO_MAX) memo.clear();
-  const superseded =
-    hit?.superseded ?? (hit ? { content: hit.content, stamp: hit.stamp } : undefined);
+  const superseded = hit ? { content: hit.content, stamp: hit.stamp } : undefined;
   memo.set(key, { path, content, stamp, ...(superseded ? { superseded } : {}) });
   return { path, content, stamp };
 }
