@@ -6,6 +6,12 @@ All notable changes to this project are documented in this file.
 
 ### Added
 
+- Optional workbench-service integration loads context for SSH tool paths and
+  `/remote` defaults, with URI identities, one-exec ancestor scans and batched
+  stamp rechecks. Remote reads deduplicate, changes produce notices, and hidden
+  context returns after compaction. Host failures are suppressed per session.
+  Remote walks ignore `workingDirOnly`; simple Bash globs are supported, `**`
+  includes are skipped. Local behavior is unchanged.
 - `context.exclude` accepts launch-directory-relative file and subtree globs,
   with staged editing in `/context config`. Exclusions apply to direct touches,
   recursive patterns, symlink targets, notices and compaction re-injection.

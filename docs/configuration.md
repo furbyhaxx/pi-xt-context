@@ -109,6 +109,41 @@ change Pi's own startup loader.
 Saving exclusions stops future automatic loading; text already in the session
 remains until it is compacted out or a new session is started.
 
+## Remote locations
+
+When `workbench` publishes its optional version-1 service, file tool paths and
+bash `cwd` resolve through that service, including plain paths under `/remote`
+and explicit `file://` paths. Without the service, local behavior is unchanged.
+Remote bash scans its resolved `cwd` even without a `cd`; a simple `cd` is tracked
+relative to that location, with the resulting path taken from `pwd` when present.
+
+Remote walks continue to the remote filesystem root `/`. `workingDirOnly` is
+ignored remotely: the local launch directory is not a remote boundary. Context
+files are keyed and displayed as `ssh://host[:port]/absolute/path`, keeping hosts,
+ports and local paths separate.
+
+- Literal includes and simple `*`, `?`, and bracket globs expand at each ancestor
+  with Bash `nullglob` and `dotglob`. `**` includes are skipped; brace expansion
+  and extglobs are unsupported remotely. Local glob behavior is unchanged.
+- Exclusions use Bash pattern matching against the path and each parent prefix.
+  Their base is the current remote default directory on that same host, or `/`
+  for an explicit host that is not the remote default. `*` can span `/` in these
+  exclusion patterns. Brace exclusions and symlink-target exclusions are not
+  supported remotely; matching is lexical. A matched directory skips its subtree.
+- One SSH execution discovers an ancestor chain or rechecks a directory's known
+  files. Content is capped at 64 KiB before transfer; tab-separated frames encode
+  paths and content as base64. Unchanged stamps transfer metadata only. Repeated
+  touches of the same directory within one turn do not execute another scan.
+- The remote host needs Bash 4+ and GNU coreutils (`stat`, `date`, `head`, `base64`,
+  `tr`). Stamps use modification time in milliseconds plus byte size.
+- SSH/service failures are logged once per host and port per session. Further
+  automatic scans of that endpoint are skipped until a new session or reload;
+  tool results are not changed or failed. Local discovery remains available.
+
+User and trusted local project configuration still select the patterns. Remote
+Pi settings are not loaded. Remote context retains the usual read deduplication,
+change notices and post-compaction re-injection.
+
 ## Slash command
 
 `/context` — overview (counts, dirs, effective settings, provenance).

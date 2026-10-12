@@ -31,6 +31,18 @@ Ancestor files shared by many directories are read once and reused. Parent and
 subagent sessions keep independent injection state, including when they run in
 the same process.
 
+## Remote locations
+
+With the optional `workbench` extension, `ssh://host/path` tools and plain paths
+under `/remote` load context from the remote machine. Remote files keep their
+SSH URI in injections, notices and `/context list`; local and remote copies do
+not share identities. No workbench import or additional configuration is needed.
+
+Remote discovery walks to `/` regardless of `workingDirOnly`. It supports literal
+patterns and simple Bash globs; recursive `**` patterns are skipped. See
+[remote configuration semantics](docs/configuration.md#remote-locations) for
+exclusions, platform requirements and limitations.
+
 ## Install
 
 ```bash
