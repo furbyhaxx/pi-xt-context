@@ -69,10 +69,19 @@ export async function readContextFile(path: string): Promise<ContextText | null>
   }
   if (content.trim().length === 0) return null;
 
+  const text = { path, content, stamp };
+  rememberContextText(text);
+  return text;
+}
+
+/** Share remotely read text with the same revision cache used by local change notices. */
+export function rememberContextText(text: ContextText): void {
+  const key = fileDedupKey(text.path);
+  const hit = memo.get(key);
+  if (hit && sameStamp(hit.stamp, text.stamp)) return;
   if (memo.size >= MEMO_MAX) memo.clear();
   const superseded = hit ? { content: hit.content, stamp: hit.stamp } : undefined;
-  memo.set(key, { path, content, stamp, ...(superseded ? { superseded } : {}) });
-  return { path, content, stamp };
+  memo.set(key, { ...text, ...(superseded ? { superseded } : {}) });
 }
 
 /** The text behind `stamp`, when this process still holds that generation. */

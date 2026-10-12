@@ -44,6 +44,7 @@
     "src/discovery.ts",
     "src/loaded.ts",
     "src/paths.ts",
+    "src/remote.ts",
     "docs",
     "README.md",
     "CHANGELOG.md",

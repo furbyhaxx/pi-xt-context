@@ -10,6 +10,7 @@ export function fromBashPath(p: string): string {
 
 /** Dedup key for directories: bash→win, unify separators, lowercase only on win32. */
 export function pathKey(p: string): string {
+  if (p.startsWith("ssh://")) return p;
   const s = fromBashPath(p).replace(/\\/g, "/");
   return process.platform === "win32" ? s.toLowerCase() : s;
 }
@@ -38,6 +39,7 @@ function memoRealpath(p: string): string {
  * Display always uses the as-found path.
  */
 export function fileDedupKey(p: string): string {
+  if (p.startsWith("ssh://")) return p;
   try {
     return pathKey(memoRealpath(p));
   } catch {
@@ -47,6 +49,7 @@ export function fileDedupKey(p: string): string {
 
 /** Prefer a workspace-relative, slash-normalized display path when contained. */
 export function workspaceDisplayPath(filePath: string, workspace: string): string {
+  if (filePath.startsWith("ssh://")) return filePath;
   const rel = relative(workspace, filePath);
   const outside = rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel);
   if (!rel || outside) return filePath;

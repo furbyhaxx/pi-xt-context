@@ -67,6 +67,14 @@ import {
   workspaceDisplayPath,
 } from "./src/paths.ts";
 
+import {
+  isWorkbenchService,
+  RemoteContexts,
+  remoteToolDirectory,
+  type SshLocation,
+  type WorkbenchServiceV1,
+} from "./src/remote.ts";
+
 export {
   buildContextBlock,
   dirForToolEvent,
@@ -202,13 +210,13 @@ function changedSince(tracked: TrackedFile, stamp: FileStamp): boolean {
  * call's output stays inside its parent tool result, and a partial read gives
  * the model a slice, not the file.
  */
-function noteAgentRead(s: State, event: ToolResultEvent): void {
+function noteAgentRead(s: State, event: ToolResultEvent, resolvedPath?: string): void {
   if (event.toolName !== "read" || event.parentToolCallId) return;
   const input = event.input;
   if (input.offset != null || input.limit != null) return;
   const raw = input.path ?? input.file_path;
   if (typeof raw !== "string" || raw.length === 0) return;
-  const abs = isAbsolute(raw) ? raw : resolve(s.launchDir, raw);
+  const abs = resolvedPath ?? (isAbsolute(raw) ? raw : resolve(s.launchDir, raw));
   s.agentRead.add(fileDedupKey(fromBashPath(abs)));
 }
 
@@ -285,8 +293,17 @@ async function sendNotice(
 export default function piXtContext(pi: ExtensionAPI) {
   let state: State | null = initState(process.cwd());
   let config = loadConfig(process.cwd(), false);
+  let workbench: WorkbenchServiceV1 | undefined;
+  let remoteContexts: RemoteContexts | undefined;
+  const receiveService = (value: unknown) => {
+    if (!isWorkbenchService(value) || value === workbench) return;
+    workbench = value;
+    remoteContexts = new RemoteContexts(value);
+  };
+  pi.events?.on("workbench:service", receiveService);
 
   const inScope = (s: State, file: TrackedFile): boolean =>
+    file.path.startsWith("ssh://") ||
     (!config.effective.workingDirOnly || isContainedIn(file.scopeDir, s.launchDir)) &&
     !createExclusionMatcher(s.launchDir, config.effective.exclude)(file.path);
 
@@ -377,8 +394,11 @@ export default function piXtContext(pi: ExtensionAPI) {
     dir: string,
     dirKey: string,
     generation: number,
+    remote?: SshLocation,
   ): Promise<void> => {
-    const files = await discoverContextFiles(dir, s.launchDir, config.effective.files, {
+    const files = remote && remoteContexts
+      ? await remoteContexts.scan(remote, config.effective.files, config.effective.exclude)
+      : await discoverContextFiles(dir, s.launchDir, config.effective.files, {
       workingDirOnly: config.effective.workingDirOnly,
       launchDir: s.launchDir,
       exclude: config.effective.exclude,
@@ -443,12 +463,22 @@ export default function piXtContext(pi: ExtensionAPI) {
     s: State,
     record: DirState,
     generation: number,
+    remote?: SshLocation,
   ): Promise<void> => {
+    let remoteFiles: Map<string, ContextFile> | undefined;
+    if (remote && remoteContexts) {
+      const tracked = record.files.flatMap((key) => {
+        const file = s.tracked.get(key);
+        return file ? [file] : [];
+      });
+      const files = await remoteContexts.scan(remote, [], config.effective.exclude, tracked);
+      remoteFiles = new Map(files.map((file) => [fileDedupKey(file.path), file]));
+    }
     for (const key of record.files) {
       const tracked = s.tracked.get(key);
       if (!tracked || !inScope(s, tracked)) continue;
       const previous = heldText(tracked.path, tracked.stamp);
-      const current = await readContextFile(tracked.path);
+      const current = remoteFiles ? remoteFiles.get(key) : await readContextFile(tracked.path);
       if (state !== s || s.scanGeneration !== generation) return;
       if (!current) continue;
       const action = decide({
@@ -483,11 +513,41 @@ export default function piXtContext(pi: ExtensionAPI) {
   pi.on("tool_result", async (event) => {
     if (!state || event.isError) return;
     const s = state;
-    noteAgentRead(s, event);
-
     let targetDir: string | null = null;
+    let remote: SshLocation | undefined;
+    let resolvedPath: string | undefined;
+    let localBase: string | undefined;
+    if (workbench && ["read", "edit", "write", "grep", "ls", "find", "bash"].includes(event.toolName)) {
+      const raw = event.toolName === "bash" ? event.input.cwd : event.input.path ?? event.input.file_path;
+      const value = typeof raw === "string" ? raw : undefined;
+      const effectiveLocation = value?.startsWith("ssh://") || value?.startsWith("file://")
+        ? value : workbench.defaultLocation();
+      if (remoteContexts?.failedUri(effectiveLocation)) return;
+      try {
+        const location = await workbench.resolve(value);
+        if (state !== s) return;
+        resolvedPath = workbench.format(location);
+        if (location.kind === "ssh") {
+          if (remoteContexts?.failed(location)) return;
+          const output = (event.content ?? []).filter((c) => c.type === "text").map((c) => c.text).join("\n");
+          remote = await remoteToolDirectory(workbench, location, event.toolName, event.input, output);
+          targetDir = workbench.format(remote);
+          if (event.toolName === "bash") s.currentDir = targetDir;
+        } else if (event.toolName === "bash") {
+          if (value !== undefined || s.currentDir.startsWith("ssh://")) localBase = location.path;
+        } else {
+          targetDir = dirForToolEvent(event.toolName, { ...event.input, path: location.path }, s.launchDir);
+        }
+      } catch (error) {
+        const location = value?.startsWith("ssh://") ? value : workbench.defaultLocation();
+        const host = location.match(/^ssh:\/\/[^/]+/)?.[0];
+        if (host) remoteContexts?.fail(host, error);
+        return;
+      }
+    }
+    noteAgentRead(s, event, resolvedPath);
 
-    if (event.toolName === "bash") {
+    if (!remote && event.toolName === "bash") {
       const rawCommand = event.input?.command;
       const command = typeof rawCommand === "string" ? rawCommand : "";
       const rawOutput = (event.content ?? [])
@@ -497,19 +557,19 @@ export default function piXtContext(pi: ExtensionAPI) {
       const output = rawOutput.replace(/\u001b\[[0-9;]*[a-zA-Z]/g, "").trim();
 
       const home = process.env.HOME ?? process.env.USERPROFILE ?? s.currentDir;
-      const newDir = resolveCdDir(command, output, s.currentDir, home);
+      const newDir = resolveCdDir(command, output, localBase ?? s.currentDir, home);
 
       if (!newDir || !isAbsolute(newDir) || newDir.length < 2) return;
       if (newDir !== s.currentDir) s.currentDir = newDir;
       targetDir = newDir;
-    } else {
+    } else if (!targetDir) {
       targetDir = dirForToolEvent(event.toolName, event.input, s.launchDir);
     }
 
     if (!targetDir) return;
-    const dir = fromBashPath(targetDir);
+    const dir = remote ? targetDir : fromBashPath(targetDir);
 
-    if (config.effective.workingDirOnly && !isContainedIn(dir, s.launchDir)) {
+    if (!remote && config.effective.workingDirOnly && !isContainedIn(dir, s.launchDir)) {
       return;
     }
 
@@ -519,8 +579,8 @@ export default function piXtContext(pi: ExtensionAPI) {
       const dirKey = pathKey(dir);
       const known = s.dirContexts.get(dirKey);
       if (known && known.turn === s.turn) return;
-      if (known) await recheckDir(s, known, generation);
-      else await discoverDir(s, dir, dirKey, generation);
+      if (known) await recheckDir(s, known, generation, remote);
+      else await discoverDir(s, dir, dirKey, generation, remote);
     });
   });
 
@@ -556,7 +616,22 @@ export default function piXtContext(pi: ExtensionAPI) {
       if (hidden.length === 0) return;
 
       const files: ContextFile[] = [];
+      const remoteGroups = new Map<string, { location: SshLocation; files: TrackedFile[] }>();
       for (const t of hidden) {
+        if (t.path.startsWith("ssh://")) {
+          if (!workbench || !remoteContexts || remoteContexts.failedUri(t.path)) continue;
+          try {
+            const location = await workbench.resolve(t.path);
+            if (location.kind !== "ssh") continue;
+            const host = workbench.format({ ...location, path: "/" });
+            const group = remoteGroups.get(host) ?? { location, files: [] };
+            group.files.push(t);
+            remoteGroups.set(host, group);
+          } catch (error) {
+            remoteContexts.fail(t.path.match(/^ssh:\/\/[^/]+/)?.[0] ?? t.path, error);
+          }
+          continue;
+        }
         if (state !== s || s.scanGeneration !== generation) return;
         const text = await readContextFile(t.path);
         if (state !== s || s.scanGeneration !== generation) return;
@@ -568,7 +643,12 @@ export default function piXtContext(pi: ExtensionAPI) {
           scopeDir: t.scopeDir,
         });
       }
-      if (files.length === 0) return;
+      for (const group of remoteGroups.values()) {
+        if (state !== s || s.scanGeneration !== generation) return;
+        if (!remoteContexts) break;
+        files.push(...await remoteContexts.scan(group.location, [], config.effective.exclude, group.files));
+      }
+      if (state !== s || s.scanGeneration !== generation || files.length === 0) return;
       try {
         await sendBlock(pi, s, files);
       } catch (err) {
@@ -610,6 +690,8 @@ export default function piXtContext(pi: ExtensionAPI) {
 
   const onSession = (_event: unknown, ctx: ExtensionContext) => {
     state = initState(ctx.cwd);
+    if (workbench) remoteContexts = new RemoteContexts(workbench);
+    pi.events?.emit("workbench:service-request", receiveService);
     config = loadConfig(ctx.cwd, ctx.isProjectTrusted());
     restoreLoadedFromContext(state, ctx);
   };
